@@ -25,45 +25,67 @@ const api = {
     data.plugins = ['eclipse']; 
     return data;
   },
+  
+  // ==========================================
+  // WHATSAPP
+  // ==========================================
   getWhatsApp: async () => {
-      const res = await fetch(`${API_BASE}/whatsapp`, { headers: getAuthHeader() });
-      if (!res.ok) return { status: 'DISCONNECTED' };
-      return await res.json();
+    const res = await fetch(`${API_BASE}/whatsapp`, { headers: getAuthHeader() });
+    if (!res.ok) return { status: 'NO_INSTANCE' };
+    return await res.json();
   },
+  
   connectWhatsApp: async (data) => {
-      const res = await fetch(`${API_BASE}/whatsapp/connect`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
-      if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao conectar'); }
-      return await res.json();
+    const res = await fetch(`${API_BASE}/whatsapp/connect`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao conectar'); }
+    return await res.json();
   },
+  
+  // NOVA FUNÇÃO - Reconectar instância existente
+  reconnectWhatsApp: async (data) => {
+    const res = await fetch(`${API_BASE}/whatsapp/reconnect`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao reconectar'); }
+    return await res.json();
+  },
+  
   restartWhatsApp: async () => {
-      const res = await fetch(`${API_BASE}/whatsapp/restart`, { method: 'POST', headers: getAuthHeader() });
-      if (!res.ok) throw new Error('Erro ao reiniciar');
-      return true;
+    const res = await fetch(`${API_BASE}/whatsapp/restart`, { method: 'POST', headers: getAuthHeader() });
+    if (!res.ok) throw new Error('Erro ao reiniciar');
+    return true;
   },
+  
   deleteWhatsApp: async () => {
-      const res = await fetch(`${API_BASE}/whatsapp/delete`, { method: 'POST', headers: getAuthHeader() });
-      if (!res.ok) throw new Error('Erro ao deletar');
-      return true;
+    const res = await fetch(`${API_BASE}/whatsapp/delete`, { method: 'POST', headers: getAuthHeader() });
+    if (!res.ok) throw new Error('Erro ao deletar');
+    return true;
   },
+  
   updateWhatsAppSettings: async (data) => {
-      const res = await fetch(`${API_BASE}/whatsapp/settings`, { method: 'PUT', headers: getAuthHeader(), body: JSON.stringify(data) });
-      if (!res.ok) throw new Error('Erro ao salvar configs');
-      return await res.json();
+    const res = await fetch(`${API_BASE}/whatsapp/settings`, { method: 'PUT', headers: getAuthHeader(), body: JSON.stringify(data) });
+    if (!res.ok) throw new Error('Erro ao salvar configs');
+    return await res.json();
   },
+  
   logoutWhatsApp: async () => {
-      await fetch(`${API_BASE}/whatsapp/logout`, { method: 'POST', headers: getAuthHeader() });
-      return true;
+    await fetch(`${API_BASE}/whatsapp/logout`, { method: 'POST', headers: getAuthHeader() });
+    return true;
   },
+  
+  // ==========================================
+  // ECLIPSE
+  // ==========================================
   saveEclipseSettings: async (data) => {
     const res = await fetch(`${API_BASE}/eclipse/settings`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao salvar'); }
     return await res.json();
   },
+  
   getEclipseSettings: async () => {
     const res = await fetch(`${API_BASE}/eclipse/settings`, { headers: getAuthHeader() });
     if (!res.ok) return { api_url: '', api_key: '' };
     return await res.json();
   },
+  
   createEclipseTest: async (data) => {
     const res = await fetch(`${API_BASE}/eclipse/create-test`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao criar teste'); }
