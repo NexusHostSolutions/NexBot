@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  nexbot-db:
+    image: postgres:15-alpine
+    container_name: nexbot-db
+    restart: always
+    environment:
+      POSTGRES_USER: nexbot_user
+      POSTGRES_PASSWORD: "V5ZtAzMEzpMGHul7eA17plqy3"
+      POSTGRES_DB: nexbot_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - nexbot-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexbot_user -d nexbot_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nexbot-redis:
+    image: redis:alpine
+    container_name: nexbot-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - nexbot-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- EVOLUTION API (NOVO) ---
+  evolution-api:
+    image: evoapicloud/evolution-api:latest
+    container_name: evolution-api
+    restart: always
+    ports:
+      - "8081:8080" # Acessível externamente na porta 8081
+    depends_on:
+      nexbot-db:
+        condition: service_healthy
+      nexbot-redis:
+        condition: service_healthy
+    environment:
+      # Configurações Gerais
+      SERVER_TYPE: http
+      SERVER_PORT: 8080
+      SERVER_URL: http://localhost:8081
+      
+      # Autenticação (Sua API KEY Global)
+      AUTHENTICATION_TYPE: apikey
+      # 👇 COLOQUE SUA CHAVE DE 32 CARACTERES AQUI EMBAIXO 👇
+      AUTHENTICATION_API_KEY: "t63q8ajdbhoitvr813ppelf16k4ix2j6"
+      
+      # Banco de Dados (Usa o mesmo do NexBot)
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: "postgresql://nexbot_user:V5ZtAzMEzpMGHul7eA17plqy3@nexbot-db:5432/nexbot_db?schema=evolution"
+      
+      # Cache / Redis
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: "redis://nexbot-redis:6379/1"
+      
+      # Logs e Sentry
+      LOG_LEVEL: error
+      
+      # Configurações do WhatsApp
+      QRCODE_LIMIT: 30
+      BEHAVIOR_ALWAYS_USE_QR: "true"
+    volumes:
+      - evolution_store:/evolution/store
+    networks:
+      - nexbot-net
+
+  nexbot-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nexbot-api
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: nexbot-db
+      DB_USER: nexbot_user
+      DB_PASSWORD: "V5ZtAzMEzpMGHul7eA17plqy3"
+      DB_NAME: nexbot_db
+      REDIS_HOST: nexbot-redis
+      JWT_SECRET: "Zk7NdmM3C7MPQi8ctlP6zAlel8tL0WBj"
+      ADMIN_INIT_PASS: "admin123"
+      
+      # Configurações para o Backend falar com a Evolution
+      EVOLUTION_API_URL: "http://evolution-api:8080"
+      # 👇 COLOQUE A MESMA CHAVE DE 32 CARACTERES AQUI TAMBÉM 👇
+      EVOLUTION_API_KEY: "t63q8ajdbhoitvr813ppelf16k4ix2j6"
+    depends_on:
+      - nexbot-db
+      - nexbot-redis
+    networks:
+      - nexbot-net
+
+  nexbot-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nexbot-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - nexbot-api
+    networks:
+      - nexbot-net
+
+networks:
+  nexbot-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  evolution_store:
