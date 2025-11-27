@@ -83,6 +83,7 @@ type CreateTestRequest struct {
 	Categoria int     `json:"categoria"`
 	Periodo   int     `json:"periodo"`
 	SendZap   bool    `json:"sendzap"`
+	Xray      bool    `json:"xray"`
 }
 
 type EclipseTrialRequest struct{ Email string `json:"email"` }
@@ -120,6 +121,17 @@ func main() {
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS read_messages BOOLEAN DEFAULT FALSE;`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS read_status BOOLEAN DEFAULT FALSE;`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS qr_code TEXT;`)
+	
+	// Tabela para logs de testes do Eclipse
+	db.Exec(`CREATE TABLE IF NOT EXISTS eclipse_tests (
+		id SERIAL PRIMARY KEY,
+		user_id INT,
+		login_generated VARCHAR(255),
+		password_generated VARCHAR(255),
+		duration_minutes INT,
+		status VARCHAR(50),
+		expires_at TIMESTAMP
+	);`)
 
 	app := fiber.New(fiber.Config{AppName: "NexBot API v2.0"})
 	app.Use(cors.New(cors.Config{
@@ -176,7 +188,8 @@ func callEvolution(method, endpoint string, body interface{}) ([]byte, int, erro
 		req.Header.Set("apikey", evolutionKey)
 	}
 
-	log.Printf("[EVOLUTION] %s %s", method, url)
+	// Logs reduzidos para evitar poluição
+	// log.Printf("[EVOLUTION] %s %s", method, url)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -186,7 +199,10 @@ func callEvolution(method, endpoint string, body interface{}) ([]byte, int, erro
 	defer resp.Body.Close()
 	respData, _ := io.ReadAll(resp.Body)
 
-	log.Printf("[EVOLUTION] Status: %d | Body: %s", resp.StatusCode, truncateLog(string(respData), 500))
+	// Log apenas se der erro (status > 299)
+	if resp.StatusCode > 299 {
+		log.Printf("[EVOLUTION] Erro Status %d: %s", resp.StatusCode, truncateLog(string(respData), 200))
+	}
 
 	return respData, resp.StatusCode, nil
 }
@@ -258,11 +274,9 @@ func getWhatsApp(c *fiber.Ctx) error {
 			&s.Number, &s.RejectCall, &s.MsgCall, &s.GroupsIgnore, &s.AlwaysOnline, &s.ReadMessages, &s.ReadStatus, &s.QrCode)
 
 	if err == sql.ErrNoRows || s.SessionName == "" {
-		log.Printf("[NEXBOT] Usuário %v não tem instância", userID)
+		// log.Printf("[NEXBOT] Usuário %v não tem instância", userID)
 		return c.JSON(fiber.Map{"status": "NO_INSTANCE"})
 	}
-
-	log.Printf("[NEXBOT] Verificando instância '%s' na Evolution... (número atual: %s)", s.SessionName, s.Number)
 
 	// Buscar status na Evolution API
 	data, code, _ := callEvolution("GET", fmt.Sprintf("/instance/fetchInstances?instanceName=%s", s.SessionName), nil)
@@ -292,7 +306,7 @@ func getWhatsApp(c *fiber.Ctx) error {
 				statusRaw = strings.ToLower(inst.State)
 			}
 
-			log.Printf("[NEXBOT] Status Evolution: '%s' | Number: '%s' | OwnerJid: '%s'", statusRaw, inst.Number, inst.OwnerJid)
+			// log.Printf("[NEXBOT] Status Evolution: '%s' | Number: '%s'", statusRaw, inst.Number)
 
 			newStatus := "DISCONNECTED"
 			if statusRaw == "open" || statusRaw == "connected" {
@@ -313,7 +327,6 @@ func getWhatsApp(c *fiber.Ctx) error {
 				if len(parts) > 0 {
 					number = parts[0]
 				}
-				log.Printf("[NEXBOT] Número extraído do ownerJid: %s", number)
 			}
 
 			// Fallbacks
@@ -334,14 +347,8 @@ func getWhatsApp(c *fiber.Ctx) error {
 			}
 
 			// Atualizar banco
-			_, dbErr := db.Exec(`UPDATE sessions SET status=$1, profile_name=$2, profile_pic=$3, profile_status=$4, number=$5 WHERE user_id=$6`,
+			db.Exec(`UPDATE sessions SET status=$1, profile_name=$2, profile_pic=$3, profile_status=$4, number=$5 WHERE user_id=$6`,
 				newStatus, name, pic, pStatus, number, userID)
-
-			if dbErr != nil {
-				log.Printf("[NEXBOT] ERRO ao atualizar banco: %v", dbErr)
-			} else {
-				log.Printf("[NEXBOT] ✅ Banco atualizado: status=%s, name=%s, number=%s", newStatus, name, number)
-			}
 
 			s.Status = newStatus
 			s.ProfileName = name
@@ -380,9 +387,6 @@ func getWhatsApp(c *fiber.Ctx) error {
 		db.Exec("UPDATE sessions SET status='DISCONNECTED' WHERE user_id=$1", userID)
 		s.Status = "DISCONNECTED"
 	}
-
-	// Log final do que será retornado
-	log.Printf("[NEXBOT] 📤 Retornando: status=%s, name=%s, number=%s", s.Status, s.ProfileName, s.Number)
 
 	return c.JSON(s)
 }
@@ -457,8 +461,6 @@ func connectWhatsApp(c *fiber.Ctx) error {
 	} else {
 		db.Exec(`UPDATE sessions SET session_name=$1, status='CONNECTING', number=$2 WHERE id=$3`, instanceName, cleanNumber, sessionId)
 	}
-
-	log.Printf("[NEXBOT] Sessão salva no banco: instance=%s, number=%s", instanceName, cleanNumber)
 
 	time.Sleep(3 * time.Second)
 
@@ -784,7 +786,7 @@ func verifyEmailCode(c *fiber.Ctx) error {
 }
 
 // ============================================
-// ECLIPSE - Criar Teste/Usuário (ATUALIZADO)
+// ECLIPSE - Criar Teste/Usuário (LIMPO PARA PRODUÇÃO)
 // ============================================
 func createEclipseTest(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
@@ -804,54 +806,37 @@ func createEclipseTest(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "API Key não configurada"})
 	}
 
-	// Definir método padrão
 	method := req.Method
-	if method == "" {
-		method = "CriarTest"
+	if method == "" { method = "CriarTest" }
+	if req.Limite == 0 { req.Limite = 1 }
+	if req.Validade == 0 { req.Validade = 60 }
+	if req.ModoConta == "" { req.ModoConta = "ssh" }
+	if req.Categoria == 0 { req.Categoria = 1 }
+
+	// 1. FORÇAR XRAY TRUE
+	sendXray := req.Xray
+	if strings.Contains(strings.ToLower(req.ModoConta), "xray") {
+		sendXray = true
 	}
 
-	// Definir valores padrão
-	limite := req.Limite
-	if limite == 0 {
-		limite = 1
-	}
-	validade := req.Validade
-	if validade == 0 {
-		validade = 60
-	}
-	modoConta := req.ModoConta
-	if modoConta == "" {
-		modoConta = "ssh"
-	}
-	categoria := req.Categoria
-	if categoria == 0 {
-		categoria = 1
-	}
-
-	// Montar payload conforme documentação da API Eclipse
 	payload := map[string]interface{}{
 		"method":     method,
 		"login":      req.Login,
 		"senha":      req.Senha,
-		"limite":     limite,
-		"validade":   validade,
+		"limite":     req.Limite,
+		"validade":   req.Validade,
 		"valor":      req.Valor,
-		"modo_conta": modoConta,
-		"categoria":  categoria,
+		"modo_conta": req.ModoConta,
+		"categoria":  req.Categoria,
 		"sendzap":    req.SendZap,
+		"xray":       sendXray,
+		// Envia "numero" SEMPRE, mesmo que vazio, para evitar Warning do PHP da API
+		"numero":     req.Numero, 
 	}
 
-	// Adicionar número se fornecido
-	if req.Numero != "" {
-		payload["numero"] = req.Numero
-	}
+	if method == "CriarUser" && req.Periodo > 0 { payload["periodo"] = req.Periodo }
 
-	// Adicionar período se for CriarUser
-	if method == "CriarUser" && req.Periodo > 0 {
-		payload["periodo"] = req.Periodo
-	}
-
-	log.Printf("[ECLIPSE] Enviando para %s: method=%s, login=%s", apiUrl.String, method, req.Login)
+	log.Printf("[ECLIPSE] Novo pedido: %s | Xray: %v", req.Login, sendXray)
 
 	jsonData, _ := json.Marshal(payload)
 	client := &http.Client{Timeout: 15 * time.Second}
@@ -864,55 +849,95 @@ func createEclipseTest(c *fiber.Ctx) error {
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		log.Printf("[ECLIPSE] Erro na requisição: %v", err)
 		return c.Status(502).JSON(fiber.Map{"error": "Não foi possível conectar à API Eclipse"})
 	}
 	defer resp.Body.Close()
 
-	// Ler resposta
+	// 2. LER E LIMPAR RESPOSTA (SANITIZAÇÃO)
 	respBody, _ := io.ReadAll(resp.Body)
-	log.Printf("[ECLIPSE] Status: %d | Resposta: %s", resp.StatusCode, string(respBody))
-
+	
 	if resp.StatusCode != 200 {
-		var errResp map[string]interface{}
-		if json.Unmarshal(respBody, &errResp) == nil {
-			if msg, ok := errResp["message"].(string); ok {
-				return c.Status(400).JSON(fiber.Map{"error": msg})
-			}
-			if msg, ok := errResp["erro"].(string); ok {
-				return c.Status(400).JSON(fiber.Map{"error": msg})
-			}
-		}
-		return c.Status(400).JSON(fiber.Map{"error": "Eclipse recusou a requisição"})
+		// Log somente erro real, não resposta de sucesso
+		log.Printf("[ECLIPSE] Erro API (%d): %s", resp.StatusCode, string(respBody))
+		return c.Status(400).JSON(fiber.Map{"error": "API recusou a operação"})
 	}
 
-	// Parsear resposta para extrair xray se existir
-	var eclipseResp map[string]interface{}
-	json.Unmarshal(respBody, &eclipseResp)
+	// Limpar avisos PHP do início se houver (encontrar o primeiro '{')
+	cleanBody := respBody
+	jsonStart := bytes.IndexByte(respBody, '{')
+	if jsonStart > 0 {
+		cleanBody = respBody[jsonStart:]
+	}
 
-	// Salvar no banco local
+	// 3. PARSEAR O JSON LIMPO
+	var eclipseResp map[string]interface{}
+	d := json.NewDecoder(bytes.NewReader(cleanBody))
+	d.UseNumber()
+	err = d.Decode(&eclipseResp)
+	
+	// Salvar no banco
 	db.Exec(`INSERT INTO eclipse_tests (user_id, login_generated, password_generated, duration_minutes, status, expires_at) 
 		VALUES ($1, $2, $3, $4, 'active', NOW() + INTERVAL '1 minute' * $4)`,
-		userID, req.Login, req.Senha, validade)
+		userID, req.Login, req.Senha, req.Validade)
 
-	// Retornar sucesso com dados
-	result := fiber.Map{
-		"success": true,
-		"login":   req.Login,
-		"senha":   req.Senha,
+	// 4. EXTRAÇÃO RECURSIVA (Busca em profundidade)
+	finalXray := ""
+	if eclipseResp != nil {
+		finalXray = findXrayRecursive(eclipseResp)
+	} else {
+		// Fallback para string original
+		finalXray = findXrayInString(string(respBody))
 	}
 
-	// Adicionar xray se existir na resposta
-	if xray, ok := eclipseResp["xray"].(string); ok && xray != "" {
-		result["xray"] = xray
-	}
-	if xray, ok := eclipseResp["v2ray"].(string); ok && xray != "" {
-		result["xray"] = xray
+	// 5. Retorno LIMPO para o Frontend
+	return c.JSON(fiber.Map{
+		"success":   true,
+		"login":     req.Login,
+		"senha":     req.Senha,
+		"xray":      finalXray,
+		// debug_raw REMOVIDO PARA PRODUÇÃO
+	})
+}
+
+// Busca recursiva em mapas e listas
+func findXrayRecursive(data interface{}) string {
+	if data == nil { return "" }
+
+	if m, ok := data.(map[string]interface{}); ok {
+		if val, ok := m["xray"].(string); ok && val != "" { return val }
+		if val, ok := m["v2ray"].(string); ok && val != "" { return val }
+		for _, v := range m {
+			if res := findXrayRecursive(v); res != "" { return res }
+		}
 	}
 
-	log.Printf("[ECLIPSE] ✅ Criado com sucesso: %s", req.Login)
+	if l, ok := data.([]interface{}); ok {
+		for _, v := range l {
+			if res := findXrayRecursive(v); res != "" { return res }
+		}
+	}
 
-	return c.JSON(result)
+	if s, ok := data.(string); ok {
+		s = strings.TrimSpace(s)
+		if len(s) > 2 && (strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")) {
+			var nested interface{}
+			if json.Unmarshal([]byte(s), &nested) == nil {
+				return findXrayRecursive(nested)
+			}
+		}
+	}
+	return ""
+}
+
+// Fallback agressivo usando Regex se o JSON estiver muito quebrado
+func findXrayInString(raw string) string {
+	// Tenta achar padrões como "xray":"vless://..."
+	re := regexp.MustCompile(`"xray"\s*:\s*"([^"]+)"`)
+	matches := re.FindStringSubmatch(raw)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
 }
 
 func listUsers(c *fiber.Ctx) error {

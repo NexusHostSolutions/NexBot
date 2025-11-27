@@ -1,6 +1,90 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Server, CheckCircle, Edit2, Trash2, Eye, EyeOff, Loader2, Copy, Check, Zap } from 'lucide-react';
-import Modal from '../components/Modal';
+import { Shield, Server, CheckCircle, Edit2, Trash2, Eye, EyeOff, Loader2, Copy, Check, Zap, X, AlertTriangle, Info, AlertCircle, Bot, GitBranch, Plus, Activity } from 'lucide-react';
+
+// --- COMPONENTE MODAL INTERNO ---
+const Modal = ({ isOpen, onClose, type = 'info', title, message }) => {
+  useEffect(() => {
+    const handleEsc = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    if (isOpen) window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  const getTypeStyles = () => {
+    switch (type) {
+      case 'success':
+        return {
+          icon: <CheckCircle className="w-6 h-6 text-emerald-500" />,
+          bgIcon: 'bg-emerald-100 dark:bg-emerald-900/30',
+          border: 'border-l-4 border-emerald-500'
+        };
+      case 'error':
+        return {
+          icon: <AlertCircle className="w-6 h-6 text-red-500" />,
+          bgIcon: 'bg-red-100 dark:bg-red-900/30',
+          border: 'border-l-4 border-red-500'
+        };
+      case 'warning':
+        return {
+          icon: <AlertTriangle className="w-6 h-6 text-amber-500" />,
+          bgIcon: 'bg-amber-100 dark:bg-amber-900/30',
+          border: 'border-l-4 border-amber-500'
+        };
+      default:
+        return {
+          icon: <Info className="w-6 h-6 text-blue-500" />,
+          bgIcon: 'bg-blue-100 dark:bg-blue-900/30',
+          border: 'border-l-4 border-blue-500'
+        };
+    }
+  };
+
+  const styles = getTypeStyles();
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+      <div 
+        className={`bg-white dark:bg-slate-800 w-full max-w-md rounded-lg shadow-2xl overflow-hidden transform transition-all scale-100 ${styles.border}`}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="flex justify-between items-start p-4">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-full ${styles.bgIcon}`}>
+              {styles.icon}
+            </div>
+            <h3 className="text-lg font-bold text-slate-800 dark:text-white">
+              {title}
+            </h3>
+          </div>
+          <button 
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <div className="p-4 pt-0">
+          <p className="text-slate-600 dark:text-slate-300 text-sm leading-relaxed">
+            {message}
+          </p>
+        </div>
+        <div className="p-4 bg-slate-50 dark:bg-slate-900/50 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            Fechar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+// --- FIM DO COMPONENTE MODAL ---
 
 const EclipsePluginSettings = ({ api }) => {
   const [loading, setLoading] = useState(false);
@@ -9,19 +93,24 @@ const EclipsePluginSettings = ({ api }) => {
   const [isConfigured, setIsConfigured] = useState(false);
   const [activeTabLocal, setActiveTabLocal] = useState('create');
   const [config, setConfig] = useState({ api_url: '', api_key: '' });
+  
+  // Estado Mock para Fluxos
+  const [flows, setFlows] = useState([
+    { id: 1, name: 'Boas Vindas', trigger: 'Olá, Oi, Tudo bem', status: 'active', hits: 1240 },
+    { id: 2, name: 'Menu Principal', trigger: '#menu', status: 'active', hits: 850 },
+    { id: 3, name: 'Suporte Técnico', trigger: 'Ajuda', status: 'paused', hits: 45 },
+  ]);
 
-  // Estado do formulário de criação
   const [createForm, setCreateForm] = useState({
     tipo: 'teste',
-    validade: 120,  // 2 horas
+    validade: 120,
     limite: 1,
-    valor: 15,      // R$ 15,00 mínimo
+    valor: 15,
     modo_conta: 'ssh',
     sendzap: false,
     numero: ''
   });
 
-  // Estado do modal de resultado
   const [resultModal, setResultModal] = useState({
     open: false,
     login: '',
@@ -44,13 +133,11 @@ const EclipsePluginSettings = ({ api }) => {
     });
   }, []);
 
-  // Gerar login automático: NexBot + 4 números
   const generateLogin = () => {
     const numbers = Math.floor(1000 + Math.random() * 9000);
     return `NexBot${numbers}`;
   };
 
-  // Gerar senha automática: 8 caracteres alfanuméricos
   const generatePassword = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     let password = '';
@@ -72,6 +159,17 @@ const EclipsePluginSettings = ({ api }) => {
     setLoading(false);
   };
 
+  const handleTestConnection = async () => {
+    setLoading(true);
+    try {
+      await api.saveEclipseSettings(config);
+      setModal({ open: true, type: 'success', title: '📡 Conexão Operacional', message: 'A comunicação com a API está a funcionar perfeitamente!' });
+    } catch (e) {
+      setModal({ open: true, type: 'error', title: '❌ Falha no Teste', message: 'Não foi possível conectar: ' + e.message });
+    }
+    setLoading(false);
+  };
+
   const handleDisconnect = () => {
     setIsConfigured(false);
     setConfig({ api_url: '', api_key: '' });
@@ -84,15 +182,8 @@ const EclipsePluginSettings = ({ api }) => {
       return;
     }
 
-    // Validação: Valor mínimo R$ 15,00
     if (createForm.valor < 15) {
       setModal({ open: true, type: 'error', title: '⚠️ Valor Inválido', message: 'O valor mínimo é R$ 15,00' });
-      return;
-    }
-
-    // Validação: Validade mínima 30 dias para usuário
-    if (createForm.tipo === 'usuario' && createForm.validade < 30) {
-      setModal({ open: true, type: 'error', title: '⚠️ Validade Inválida', message: 'A validade mínima para usuário é 30 dias' });
       return;
     }
 
@@ -109,6 +200,7 @@ const EclipsePluginSettings = ({ api }) => {
         validade: createForm.validade,
         valor: createForm.valor,
         modo_conta: createForm.modo_conta,
+        xray: (createForm.modo_conta.includes('xray')),
         sendzap: createForm.sendzap,
         numero: createForm.numero || '',
         categoria: 1
@@ -119,37 +211,7 @@ const EclipsePluginSettings = ({ api }) => {
       }
 
       const res = await api.createEclipseTest(payload);
-
-      // ★ CORREÇÃO: Extrair xray corretamente da resposta
-      let xrayCode = '';
-      
-      console.log('Resposta completa da API:', res); // Debug
-      
-      // Tentar extrair de diferentes possíveis localizações
-      if (res.remote_response) {
-        try {
-          const remoteData = typeof res.remote_response === 'string' 
-            ? JSON.parse(res.remote_response) 
-            : res.remote_response;
-          
-          console.log('Remote data:', remoteData); // Debug
-          
-          // Procurar código xray
-          if (remoteData.xray) {
-            xrayCode = remoteData.xray;
-          } else if (remoteData.mensagem && remoteData.mensagem.xray) {
-            xrayCode = remoteData.mensagem.xray;
-          }
-        } catch (e) {
-          console.error('Erro ao processar xray:', e);
-        }
-      } else if (res.mensagem && res.mensagem.xray) {
-        xrayCode = res.mensagem.xray;
-      } else if (res.xray) {
-        xrayCode = res.xray;
-      }
-
-      console.log('Código Xray extraído:', xrayCode); // Debug
+      const xrayCode = res.xray || '';
 
       setResultModal({
         open: true,
@@ -169,10 +231,9 @@ const EclipsePluginSettings = ({ api }) => {
   };
 
   const getFormattedText = () => {
-    const tipoTexto = createForm.tipo === 'teste' ? '🧪 TESTE' : '👤 USUÁRIO';
     let text = `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ ${tipoTexto} GERADO COM SUCESSO!
+✅ ${createForm.tipo === 'teste' ? 'TESTE' : 'USUÁRIO'} GERADO COM SUCESSO!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 👤 Usuário: ${resultModal.login}
@@ -185,19 +246,8 @@ const EclipsePluginSettings = ({ api }) => {
 📱 Baixe Nosso Aplicativo 👇
 https://store.nexushostsolutions.com.br/
 `;
-
-    if (resultModal.xray) {
-      text += `
-🖥️ Código Xray Gerado 👇
-${resultModal.xray}
-`;
-    }
-
-    text += `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚀 NexusHost Solutions
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
-
+    if (resultModal.xray) text += `\n🖥️ Código Xray Gerado 👇\n${resultModal.xray}\n`;
+    text += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n🚀 NexusHost Solutions\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
     return text.trim();
   };
 
@@ -211,9 +261,7 @@ ${resultModal.xray}
         textArea.value = text;
         textArea.style.position = 'fixed';
         textArea.style.left = '-9999px';
-        textArea.style.top = '-9999px';
         document.body.appendChild(textArea);
-        textArea.focus();
         textArea.select();
         document.execCommand('copy');
         document.body.removeChild(textArea);
@@ -221,25 +269,15 @@ ${resultModal.xray}
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
-      console.error('Erro ao copiar:', e);
-      const textArea = document.createElement('textarea');
-      textArea.value = text;
-      textArea.style.position = 'fixed';
-      textArea.style.left = '-9999px';
-      document.body.appendChild(textArea);
-      textArea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textArea);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      console.error(e);
     }
   };
 
   return (
-    <div className="p-8 max-w-4xl mx-auto animate-fade-in">
+    <div className="p-8 max-w-5xl mx-auto animate-fade-in">
       <Modal isOpen={modal.open} onClose={() => setModal({ ...modal, open: false })} type={modal.type} title={modal.title} message={modal.message} />
 
-      {/* Modal de Resultado */}
+      {/* Modal Resultado */}
       {resultModal.open && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-fade-in">
@@ -253,7 +291,6 @@ ${resultModal.xray}
                 </h2>
               </div>
             </div>
-
             <div className="p-4 space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 <div className="p-2 bg-slate-50 dark:bg-slate-900 rounded-lg">
@@ -265,7 +302,6 @@ ${resultModal.xray}
                   <p className="font-bold text-sm text-slate-800 dark:text-white font-mono">{resultModal.senha}</p>
                 </div>
               </div>
-
               <div className="flex gap-2 text-xs">
                 <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">
                   📊 {resultModal.limite} conexão
@@ -277,36 +313,18 @@ ${resultModal.xray}
                   🔧 {resultModal.modo.toUpperCase()}
                 </span>
               </div>
-
-              <div className="p-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg text-center">
-                <p className="text-xs text-emerald-700 dark:text-emerald-300">
-                  📱 <a href="https://store.nexushostsolutions.com.br/" target="_blank" rel="noopener noreferrer" className="underline">Baixe o App</a>
-                </p>
-              </div>
-
-              {/* ★ XRAY - Sempre mostrar se existir */}
               {resultModal.xray && (
                 <div className="p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-800">
                   <p className="text-xs text-purple-700 dark:text-purple-300 mb-1 font-bold">🖥️ Código Xray Gerado</p>
-                  <p className="font-mono text-xs text-slate-700 dark:text-slate-300 break-all">{resultModal.xray}</p>
+                  <p className="font-mono text-xs text-slate-700 dark:text-slate-300 break-all line-clamp-3 hover:line-clamp-none transition-all">{resultModal.xray}</p>
                 </div>
               )}
             </div>
-
             <div className="px-4 pb-4 flex gap-2">
-              <button
-                onClick={handleCopy}
-                className={`flex-1 py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition ${copied
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-emerald-600 text-white hover:bg-emerald-700'
-                  }`}
-              >
+              <button onClick={handleCopy} className={`flex-1 py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition ${copied ? 'bg-emerald-600 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}>
                 {copied ? <><Check size={16} /> Copiado!</> : <><Copy size={16} /> Copiar</>}
               </button>
-              <button
-                onClick={() => setResultModal({ ...resultModal, open: false })}
-                className="px-4 py-2.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white rounded-lg font-bold text-sm hover:bg-slate-300 dark:hover:bg-slate-600 transition"
-              >
+              <button onClick={() => setResultModal({ ...resultModal, open: false })} className="px-4 py-2.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-white rounded-lg font-bold text-sm hover:bg-slate-300 dark:hover:bg-slate-600 transition">
                 Fechar
               </button>
             </div>
@@ -326,30 +344,30 @@ ${resultModal.xray}
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6">
-        <button
-          onClick={() => setActiveTabLocal('create')}
-          className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 ${activeTabLocal === 'create'
-              ? 'bg-emerald-600 text-white shadow-md'
-              : 'bg-white dark:bg-slate-800 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700'
-            }`}
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+        <button 
+          onClick={() => setActiveTabLocal('create')} 
+          className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 whitespace-nowrap ${activeTabLocal === 'create' ? 'bg-emerald-600 text-white shadow-md' : 'bg-white dark:bg-slate-800 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
         >
           <Zap size={18} /> Criar Acesso
         </button>
-        <button
-          onClick={() => setActiveTabLocal('config')}
-          className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 ${activeTabLocal === 'config'
-              ? 'bg-emerald-600 text-white shadow-md'
-              : 'bg-white dark:bg-slate-800 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700'
-            }`}
+        <button 
+          onClick={() => setActiveTabLocal('bot')} 
+          className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 whitespace-nowrap ${activeTabLocal === 'bot' ? 'bg-emerald-600 text-white shadow-md' : 'bg-white dark:bg-slate-800 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
+        >
+          <Bot size={18} /> Bot WhatsApp
+        </button>
+        <button 
+          onClick={() => setActiveTabLocal('config')} 
+          className={`px-4 py-2 rounded-lg font-bold transition flex items-center gap-2 whitespace-nowrap ${activeTabLocal === 'config' ? 'bg-emerald-600 text-white shadow-md' : 'bg-white dark:bg-slate-800 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
         >
           <Server size={18} /> Configuração
         </button>
       </div>
 
-      {/* Content */}
       <div className="bg-white dark:bg-slate-800 p-8 rounded-xl shadow-lg border border-slate-200 dark:border-slate-700">
-        {/* Tab Config */}
+        
+        {/* Tab Config - RESTAURADA */}
         {activeTabLocal === 'config' && (
           <div className="space-y-6 animate-fade-in">
             <h2 className="text-xl font-semibold text-slate-800 dark:text-white flex items-center gap-2">
@@ -363,6 +381,9 @@ ${resultModal.xray}
                 <h3 className="text-xl font-bold text-emerald-800 dark:text-emerald-300 mb-2">✅ Conectado com Sucesso!</h3>
                 <p className="text-emerald-600 dark:text-emerald-400 text-sm mb-4">Sua API está configurada e pronta para uso.</p>
                 <div className="flex gap-3 justify-center">
+                  <button onClick={handleTestConnection} disabled={loading} className="flex items-center gap-2 px-5 py-2.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/50 rounded-lg text-blue-600 dark:text-blue-400 font-bold text-sm hover:bg-blue-100 dark:hover:bg-blue-900/30 transition shadow-sm">
+                    {loading ? <Loader2 size={16} className="animate-spin" /> : <Activity size={16} />} Testar API
+                  </button>
                   <button onClick={() => setIsConfigured(false)} className="flex items-center gap-2 px-5 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-lg text-slate-600 dark:text-slate-300 font-bold text-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition shadow-sm">
                     <Edit2 size={16} /> Editar
                   </button>
@@ -375,34 +396,80 @@ ${resultModal.xray}
               <>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">URL da API</label>
-                  <input
-                    value={config.api_url}
-                    onChange={e => setConfig({ ...config, api_url: e.target.value })}
-                    placeholder="https://areadocliente.nexushostsolutions.com.br/api/"
-                    className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white"
-                  />
+                  <input value={config.api_url} onChange={e => setConfig({ ...config, api_url: e.target.value })} placeholder="https://areadocliente.nexushostsolutions.com.br/api/" className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">API Key</label>
                   <div className="relative">
-                    <input
-                      type={showKey ? "text" : "password"}
-                      value={config.api_key}
-                      onChange={e => setConfig({ ...config, api_key: e.target.value })}
-                      placeholder="Sua chave API..."
-                      className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white pr-10"
-                    />
-                    <button onClick={() => setShowKey(!showKey)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                      {showKey ? <EyeOff size={18} /> : <Eye size={18} />}
-                    </button>
+                    <input type={showKey ? "text" : "password"} value={config.api_key} onChange={e => setConfig({ ...config, api_key: e.target.value })} placeholder="Sua chave API..." className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white pr-10" />
+                    <button onClick={() => setShowKey(!showKey)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">{showKey ? <EyeOff size={18} /> : <Eye size={18} />}</button>
                   </div>
                 </div>
                 <button onClick={handleSaveConfig} disabled={loading} className="w-full bg-emerald-600 text-white p-3 rounded-lg font-bold hover:bg-emerald-700 transition shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2">
-                  {loading ? <Loader2 className="animate-spin" /> : <CheckCircle size={18} />}
-                  {loading ? 'Testando...' : 'Testar e Salvar'}
+                  {loading ? <Loader2 className="animate-spin" /> : <CheckCircle size={18} />} {loading ? 'Testando...' : 'Testar e Salvar'}
                 </button>
               </>
             )}
+          </div>
+        )}
+
+        {/* Tab Bot WhatsApp */}
+        {activeTabLocal === 'bot' && (
+          <div className="space-y-6 animate-fade-in">
+            <div className="flex justify-between items-center">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-800 dark:text-white flex items-center gap-2">
+                  <Bot size={20} /> Automação de Mensagens
+                </h2>
+                <p className="text-sm text-slate-500 mt-1">Crie fluxos de conversa automáticos para seu WhatsApp.</p>
+              </div>
+              <button className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700 transition shadow-md">
+                <Plus size={18} /> Criar Novo Fluxo
+              </button>
+            </div>
+
+            <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+              <div className="grid grid-cols-12 gap-4 p-4 border-b border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-500 uppercase bg-slate-100 dark:bg-slate-800/50">
+                <div className="col-span-5">Nome do Fluxo</div>
+                <div className="col-span-3">Gatilho</div>
+                <div className="col-span-2 text-center">Status</div>
+                <div className="col-span-2 text-right">Ações</div>
+              </div>
+              
+              {flows.length === 0 ? (
+                <div className="p-8 text-center text-slate-500">
+                  <GitBranch className="w-12 h-12 mx-auto mb-3 text-slate-300 dark:text-slate-600" />
+                  <p>Nenhum fluxo criado ainda.</p>
+                </div>
+              ) : (
+                flows.map((flow) => (
+                  <div key={flow.id} className="grid grid-cols-12 gap-4 p-4 items-center hover:bg-white dark:hover:bg-slate-800 transition border-b border-slate-100 dark:border-slate-700/50 last:border-0">
+                    <div className="col-span-5 font-medium text-slate-800 dark:text-slate-200 flex items-center gap-3">
+                      <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg text-blue-600 dark:text-blue-400">
+                        <GitBranch size={18} />
+                      </div>
+                      {flow.name}
+                    </div>
+                    <div className="col-span-3 text-sm text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-900 px-2 py-1 rounded w-fit">
+                      {flow.trigger}
+                    </div>
+                    <div className="col-span-2 text-center">
+                      <span className={`px-2 py-1 rounded-full text-xs font-bold ${flow.status === 'active' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400'}`}>
+                        {flow.status === 'active' ? 'Ativo' : 'Pausado'}
+                      </span>
+                    </div>
+                    <div className="col-span-2 flex justify-end gap-2">
+                      <button className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-500 transition">
+                        <Edit2 size={16} />
+                      </button>
+                      <button className="p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg text-red-500 transition">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         )}
 
@@ -466,7 +533,7 @@ ${resultModal.xray}
               </select>
             </div>
 
-            {/* ★ CORREÇÃO: Grid com Validade, Limite E VALOR (sempre visível) */}
+            {/* Grid com Validade, Limite E VALOR */}
             <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">
@@ -494,7 +561,6 @@ ${resultModal.xray}
                   className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
                 />
               </div>
-              {/* ★ CAMPO VALOR SEMPRE VISÍVEL */}
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Valor (R$)</label>
                 <input
