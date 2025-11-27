@@ -12,10 +12,10 @@ const EclipsePluginSettings = ({ api }) => {
 
   // Estado do formulário de criação
   const [createForm, setCreateForm] = useState({
-    tipo: 'teste', // teste ou usuario
-    validade: 120,  // 120 minutos para teste
+    tipo: 'teste',
+    validade: 120,  // 2 horas
     limite: 1,
-    valor: 20,      // R$ 20,00
+    valor: 15,      // R$ 15,00 mínimo
     modo_conta: 'ssh',
     sendzap: false,
     numero: ''
@@ -46,11 +46,11 @@ const EclipsePluginSettings = ({ api }) => {
 
   // Gerar login automático: NexBot + 4 números
   const generateLogin = () => {
-    const numbers = Math.floor(1000 + Math.random() * 9000); // 4 dígitos
+    const numbers = Math.floor(1000 + Math.random() * 9000);
     return `NexBot${numbers}`;
   };
 
-  // Gerar senha automática: 6 caracteres alfanuméricos
+  // Gerar senha automática: 8 caracteres alfanuméricos
   const generatePassword = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     let password = '';
@@ -84,7 +84,18 @@ const EclipsePluginSettings = ({ api }) => {
       return;
     }
 
-    // Gerar login e senha automaticamente
+    // Validação: Valor mínimo R$ 15,00
+    if (createForm.valor < 15) {
+      setModal({ open: true, type: 'error', title: '⚠️ Valor Inválido', message: 'O valor mínimo é R$ 15,00' });
+      return;
+    }
+
+    // Validação: Validade mínima 30 dias para usuário
+    if (createForm.tipo === 'usuario' && createForm.validade < 30) {
+      setModal({ open: true, type: 'error', title: '⚠️ Validade Inválida', message: 'A validade mínima para usuário é 30 dias' });
+      return;
+    }
+
     const login = generateLogin();
     const senha = generatePassword();
 
@@ -103,14 +114,43 @@ const EclipsePluginSettings = ({ api }) => {
         categoria: 1
       };
 
-      // Se for usuário, adicionar período
       if (createForm.tipo === 'usuario') {
         payload.periodo = 30;
       }
 
       const res = await api.createEclipseTest(payload);
 
-      // Mostrar modal de resultado
+      // ★ CORREÇÃO: Extrair xray corretamente da resposta
+      let xrayCode = '';
+      
+      console.log('Resposta completa da API:', res); // Debug
+      
+      // Tentar extrair de diferentes possíveis localizações
+      if (res.remote_response) {
+        try {
+          const remoteData = typeof res.remote_response === 'string' 
+            ? JSON.parse(res.remote_response) 
+            : res.remote_response;
+          
+          console.log('Remote data:', remoteData); // Debug
+          
+          // Procurar código xray
+          if (remoteData.xray) {
+            xrayCode = remoteData.xray;
+          } else if (remoteData.mensagem && remoteData.mensagem.xray) {
+            xrayCode = remoteData.mensagem.xray;
+          }
+        } catch (e) {
+          console.error('Erro ao processar xray:', e);
+        }
+      } else if (res.mensagem && res.mensagem.xray) {
+        xrayCode = res.mensagem.xray;
+      } else if (res.xray) {
+        xrayCode = res.xray;
+      }
+
+      console.log('Código Xray extraído:', xrayCode); // Debug
+
       setResultModal({
         open: true,
         login: login,
@@ -118,7 +158,7 @@ const EclipsePluginSettings = ({ api }) => {
         limite: createForm.limite,
         validade: createForm.validade,
         valor: createForm.valor,
-        xray: res.mensagem?.xray || '',
+        xray: xrayCode,
         modo: createForm.modo_conta
       });
 
@@ -128,7 +168,6 @@ const EclipsePluginSettings = ({ api }) => {
     setLoading(false);
   };
 
-  // Texto formatado para copiar
   const getFormattedText = () => {
     const tipoTexto = createForm.tipo === 'teste' ? '🧪 TESTE' : '👤 USUÁRIO';
     let text = `
@@ -165,11 +204,9 @@ ${resultModal.xray}
   const handleCopy = async () => {
     const text = getFormattedText();
     try {
-      // Tentar clipboard API primeiro
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
       } else {
-        // Fallback para HTTP (sem HTTPS)
         const textArea = document.createElement('textarea');
         textArea.value = text;
         textArea.style.position = 'fixed';
@@ -185,7 +222,6 @@ ${resultModal.xray}
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
       console.error('Erro ao copiar:', e);
-      // Fallback final
       const textArea = document.createElement('textarea');
       textArea.value = text;
       textArea.style.position = 'fixed';
@@ -201,14 +237,12 @@ ${resultModal.xray}
 
   return (
     <div className="p-8 max-w-4xl mx-auto animate-fade-in">
-      {/* Modal padrão */}
       <Modal isOpen={modal.open} onClose={() => setModal({ ...modal, open: false })} type={modal.type} title={modal.title} message={modal.message} />
 
-      {/* Modal de Resultado - Compacto */}
+      {/* Modal de Resultado */}
       {resultModal.open && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-fade-in">
-            {/* Header Compacto */}
             <div className="bg-gradient-to-r from-emerald-500 to-teal-500 px-4 py-3 flex items-center gap-3">
               <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
                 <CheckCircle className="w-6 h-6 text-white" />
@@ -220,9 +254,7 @@ ${resultModal.xray}
               </div>
             </div>
 
-            {/* Conteúdo Compacto */}
             <div className="p-4 space-y-2">
-              {/* Login e Senha em Grid */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="p-2 bg-slate-50 dark:bg-slate-900 rounded-lg">
                   <p className="text-xs text-slate-500">👤 Usuário</p>
@@ -234,7 +266,6 @@ ${resultModal.xray}
                 </div>
               </div>
 
-              {/* Info em linha */}
               <div className="flex gap-2 text-xs">
                 <span className="px-2 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded">
                   📊 {resultModal.limite} conexão
@@ -247,23 +278,21 @@ ${resultModal.xray}
                 </span>
               </div>
 
-              {/* Link App */}
               <div className="p-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg text-center">
                 <p className="text-xs text-emerald-700 dark:text-emerald-300">
                   📱 <a href="https://store.nexushostsolutions.com.br/" target="_blank" rel="noopener noreferrer" className="underline">Baixe o App</a>
                 </p>
               </div>
 
-              {/* Xray se existir */}
+              {/* ★ XRAY - Sempre mostrar se existir */}
               {resultModal.xray && (
-                <div className="p-2 bg-slate-100 dark:bg-slate-900 rounded-lg">
-                  <p className="text-xs text-slate-500 mb-1">🖥️ Código Xray</p>
-                  <p className="font-mono text-xs text-slate-700 dark:text-slate-300 break-all line-clamp-2">{resultModal.xray}</p>
+                <div className="p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-800">
+                  <p className="text-xs text-purple-700 dark:text-purple-300 mb-1 font-bold">🖥️ Código Xray Gerado</p>
+                  <p className="font-mono text-xs text-slate-700 dark:text-slate-300 break-all">{resultModal.xray}</p>
                 </div>
               )}
             </div>
 
-            {/* Botões */}
             <div className="px-4 pb-4 flex gap-2">
               <button
                 onClick={handleCopy}
@@ -396,7 +425,7 @@ ${resultModal.xray}
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Tipo de Acesso</label>
               <div className="grid grid-cols-2 gap-3">
                 <button
-                  onClick={() => setCreateForm({ ...createForm, tipo: 'teste', validade: 120, valor: 20 })}
+                  onClick={() => setCreateForm({ ...createForm, tipo: 'teste', validade: 120, valor: 15 })}
                   disabled={!isConfigured}
                   className={`p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2 disabled:opacity-50 ${createForm.tipo === 'teste'
                       ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'
@@ -405,10 +434,10 @@ ${resultModal.xray}
                 >
                   <span className="text-2xl">🧪</span>
                   <span className="font-bold text-slate-700 dark:text-white">Teste</span>
-                  <span className="text-xs text-slate-500">120 min / R$ 20</span>
+                  <span className="text-xs text-slate-500">120 min / R$ 15</span>
                 </button>
                 <button
-                  onClick={() => setCreateForm({ ...createForm, tipo: 'usuario', validade: 30, valor: 20 })}
+                  onClick={() => setCreateForm({ ...createForm, tipo: 'usuario', validade: 30, valor: 15 })}
                   disabled={!isConfigured}
                   className={`p-4 rounded-xl border-2 transition-all flex flex-col items-center gap-2 disabled:opacity-50 ${createForm.tipo === 'usuario'
                       ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'
@@ -417,7 +446,7 @@ ${resultModal.xray}
                 >
                   <span className="text-2xl">👤</span>
                   <span className="font-bold text-slate-700 dark:text-white">Usuário</span>
-                  <span className="text-xs text-slate-500">30 dias / R$ 20</span>
+                  <span className="text-xs text-slate-500">30 dias / R$ 15</span>
                 </button>
               </div>
             </div>
@@ -432,29 +461,31 @@ ${resultModal.xray}
                 className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
               >
                 <option value="ssh">SSH</option>
-               {/* <option value="v2ray">V2Ray</option> */}
                 <option value="xray">Xray</option>
                 <option value="ssh_xray">SSH + Xray</option>
-               {/* <option value="ssh_v2ray">SSH + V2Ray</option> */}
               </select>
             </div>
 
-            {/* Grid de opções */}
-            <div className="grid grid-cols-2 gap-4">
+            {/* ★ CORREÇÃO: Grid com Validade, Limite E VALOR (sempre visível) */}
+            <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">
-                  Validade ({createForm.tipo === 'teste' ? 'minutos' : 'dias'})
+                  Validade ({createForm.tipo === 'teste' ? 'min' : 'dias'})
                 </label>
                 <input
                   type="number"
                   value={createForm.validade}
                   onChange={e => setCreateForm({ ...createForm, validade: parseInt(e.target.value) || 0 })}
                   disabled={!isConfigured}
+                  min={createForm.tipo === 'teste' ? 1 : 30}
                   className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
                 />
+                {createForm.tipo === 'usuario' && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠️ Mín: 30</p>
+                )}
               </div>
               <div>
-                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Limite de Conexões</label>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Limite</label>
                 <input
                   type="number"
                   value={createForm.limite}
@@ -463,33 +494,34 @@ ${resultModal.xray}
                   className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
                 />
               </div>
+              {/* ★ CAMPO VALOR SEMPRE VISÍVEL */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Valor (R$)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="15.00"
+                  value={createForm.valor}
+                  onChange={e => setCreateForm({ ...createForm, valor: parseFloat(e.target.value) || 15 })}
+                  disabled={!isConfigured}
+                  className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
+                />
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠️ Mín: R$ 15</p>
+              </div>
             </div>
 
-            {/* Valor e WhatsApp (só para usuário) */}
+            {/* WhatsApp (só para usuário) */}
             {createForm.tipo === 'usuario' && (
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">Valor (R$)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={createForm.valor}
-                    onChange={e => setCreateForm({ ...createForm, valor: parseFloat(e.target.value) || 0 })}
-                    disabled={!isConfigured}
-                    className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">WhatsApp (opcional)</label>
-                  <input
-                    type="text"
-                    placeholder="5511999999999"
-                    value={createForm.numero}
-                    onChange={e => setCreateForm({ ...createForm, numero: e.target.value.replace(/\D/g, '') })}
-                    disabled={!isConfigured}
-                    className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">WhatsApp (opcional)</label>
+                <input
+                  type="text"
+                  placeholder="5511999999999"
+                  value={createForm.numero}
+                  onChange={e => setCreateForm({ ...createForm, numero: e.target.value.replace(/\D/g, '') })}
+                  disabled={!isConfigured}
+                  className="w-full p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg dark:text-white disabled:opacity-50"
+                />
               </div>
             )}
 
