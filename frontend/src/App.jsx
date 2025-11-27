@@ -22,10 +22,10 @@ const api = {
     if (!res.ok) throw new Error('Falha no login');
     const data = await res.json();
     localStorage.setItem('nexbot_token', data.token);
-    data.plugins = ['eclipse']; 
+    data.plugins = ['eclipse'];
     return data;
   },
-  
+
   // ==========================================
   // WHATSAPP
   // ==========================================
@@ -34,43 +34,44 @@ const api = {
     if (!res.ok) return { status: 'NO_INSTANCE' };
     return await res.json();
   },
-  
+
   connectWhatsApp: async (data) => {
     const res = await fetch(`${API_BASE}/whatsapp/connect`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao conectar'); }
     return await res.json();
   },
-  
-  // NOVA FUNÇÃO - Reconectar instância existente
+
+  // Reconectar instância existente (sem criar nova)
   reconnectWhatsApp: async (data) => {
-    const res = await fetch(`${API_BASE}/whatsapp/reconnect`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
+    const res = await fetch(`${API_BASE}/whatsapp/reconnect`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data || {}) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao reconectar'); }
     return await res.json();
   },
-  
+
   restartWhatsApp: async () => {
     const res = await fetch(`${API_BASE}/whatsapp/restart`, { method: 'POST', headers: getAuthHeader() });
-    if (!res.ok) throw new Error('Erro ao reiniciar');
-    return true;
-  },
-  
-  deleteWhatsApp: async () => {
-    const res = await fetch(`${API_BASE}/whatsapp/delete`, { method: 'POST', headers: getAuthHeader() });
-    if (!res.ok) throw new Error('Erro ao deletar');
-    return true;
-  },
-  
-  updateWhatsAppSettings: async (data) => {
-    const res = await fetch(`${API_BASE}/whatsapp/settings`, { method: 'PUT', headers: getAuthHeader(), body: JSON.stringify(data) });
-    if (!res.ok) throw new Error('Erro ao salvar configs');
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao reiniciar'); }
     return await res.json();
   },
-  
-  logoutWhatsApp: async () => {
-    await fetch(`${API_BASE}/whatsapp/logout`, { method: 'POST', headers: getAuthHeader() });
-    return true;
+
+  deleteWhatsApp: async () => {
+    const res = await fetch(`${API_BASE}/whatsapp/delete`, { method: 'POST', headers: getAuthHeader() });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao deletar'); }
+    return await res.json();
   },
-  
+
+  updateWhatsAppSettings: async (data) => {
+    const res = await fetch(`${API_BASE}/whatsapp/settings`, { method: 'PUT', headers: getAuthHeader(), body: JSON.stringify(data) });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao salvar configs'); }
+    return await res.json();
+  },
+
+  logoutWhatsApp: async () => {
+    const res = await fetch(`${API_BASE}/whatsapp/logout`, { method: 'POST', headers: getAuthHeader() });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao desconectar'); }
+    return await res.json();
+  },
+
   // ==========================================
   // ECLIPSE
   // ==========================================
@@ -79,13 +80,13 @@ const api = {
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao salvar'); }
     return await res.json();
   },
-  
+
   getEclipseSettings: async () => {
     const res = await fetch(`${API_BASE}/eclipse/settings`, { headers: getAuthHeader() });
     if (!res.ok) return { api_url: '', api_key: '' };
     return await res.json();
   },
-  
+
   createEclipseTest: async (data) => {
     const res = await fetch(`${API_BASE}/eclipse/create-test`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao criar teste'); }
@@ -122,3 +123,4 @@ export default function App() {
     </div>
   );
 }
+

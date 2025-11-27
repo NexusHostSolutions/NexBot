@@ -35,7 +35,7 @@ type LoginRequest struct {
 
 type WhatsAppSession struct {
 	SessionName   string `json:"session_name"`
-        Number        string `json:"number"`
+	Number        string `json:"number"`
 	Status        string `json:"status"`
 	ProfilePic    string `json:"profile_pic"`
 	ProfileName   string `json:"profile_name"`
@@ -70,10 +70,19 @@ type EclipseSettingsRequest struct {
 	ApiKey string `json:"api_key"`
 }
 
+// Struct atualizado para Eclipse com todos os campos da API
 type CreateTestRequest struct {
-	Duration int    `json:"duration"`
-	Login    string `json:"login"`
-	Password string `json:"password"`
+	Method    string  `json:"method"`
+	Login     string  `json:"login"`
+	Senha     string  `json:"senha"`
+	Limite    int     `json:"limite"`
+	Validade  int     `json:"validade"`
+	Valor     float64 `json:"valor"`
+	ModoConta string  `json:"modo_conta"`
+	Numero    string  `json:"numero"`
+	Categoria int     `json:"categoria"`
+	Periodo   int     `json:"periodo"`
+	SendZap   bool    `json:"sendzap"`
 }
 
 type EclipseTrialRequest struct{ Email string `json:"email"` }
@@ -102,6 +111,7 @@ func main() {
 	// Migrations
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS profile_pic TEXT;`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS profile_name TEXT;`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS number VARCHAR(20);`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS profile_status TEXT;`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS reject_call BOOLEAN DEFAULT FALSE;`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS msg_call TEXT DEFAULT '';`)
@@ -111,7 +121,7 @@ func main() {
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS read_status BOOLEAN DEFAULT FALSE;`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS qr_code TEXT;`)
 
-	app := fiber.New(fiber.Config{AppName: "NexBot API v1.0"})
+	app := fiber.New(fiber.Config{AppName: "NexBot API v2.0"})
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
@@ -138,7 +148,7 @@ func main() {
 	v1.Post("/eclipse/create-test", createEclipseTest)
 	v1.Get("/admin/users", listUsers)
 
-	log.Println("🚀 NexBot API iniciando na porta 8080...")
+	log.Println("🚀 NexBot API v2.0 iniciando na porta 8080...")
 	log.Fatal(app.Listen(":8080"))
 }
 
@@ -176,7 +186,7 @@ func callEvolution(method, endpoint string, body interface{}) ([]byte, int, erro
 	defer resp.Body.Close()
 	respData, _ := io.ReadAll(resp.Body)
 
-	log.Printf("[EVOLUTION] Status: %d | Body: %s", resp.StatusCode, truncateLog(string(respData), 800))
+	log.Printf("[EVOLUTION] Status: %d | Body: %s", resp.StatusCode, truncateLog(string(respData), 500))
 
 	return respData, resp.StatusCode, nil
 }
@@ -229,143 +239,150 @@ func login(c *fiber.Ctx) error {
 }
 
 // ============================================
-// GET /whatsapp - Retorna estado atual (CORRIGIDO)
+// GET /whatsapp - Retorna estado atual
 // ============================================
 func getWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var s WhatsAppSession
 
-	// Buscar sessão no banco
+	// Buscar sessão no banco - INCLUINDO NÚMERO
 	err := db.QueryRow(`
-		SELECT session_name, status, 
+		SELECT session_name, status,
 		       COALESCE(profile_pic, ''), COALESCE(profile_name, ''), COALESCE(profile_status, ''),
+		       COALESCE(number, ''),
 		       COALESCE(reject_call, false), COALESCE(msg_call, ''), COALESCE(groups_ignore, false),
 		       COALESCE(always_online, false), COALESCE(read_messages, false), COALESCE(read_status, false),
 		       COALESCE(qr_code, '')
 		FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1`, userID).
 		Scan(&s.SessionName, &s.Status, &s.ProfilePic, &s.ProfileName, &s.ProfileStatus,
-			&s.RejectCall, &s.MsgCall, &s.GroupsIgnore, &s.AlwaysOnline, &s.ReadMessages, &s.ReadStatus, &s.QrCode)
+			&s.Number, &s.RejectCall, &s.MsgCall, &s.GroupsIgnore, &s.AlwaysOnline, &s.ReadMessages, &s.ReadStatus, &s.QrCode)
 
-	if err == sql.ErrNoRows {
-		return c.JSON(fiber.Map{"status": "DISCONNECTED"})
+	if err == sql.ErrNoRows || s.SessionName == "" {
+		log.Printf("[NEXBOT] Usuário %v não tem instância", userID)
+		return c.JSON(fiber.Map{"status": "NO_INSTANCE"})
 	}
 
-	if s.SessionName != "" {
-		log.Printf("[NEXBOT] Verificando instância '%s' na Evolution...", s.SessionName)
-		data, code, _ := callEvolution("GET", fmt.Sprintf("/instance/fetchInstances?instanceName=%s", s.SessionName), nil)
-		
-		if code == 200 {
-			// Estrutura flexível para pegar dados da raiz OU do objeto instance
-			var instances []struct {
-				ConnectionStatus  string `json:"connectionStatus"`
-				Status            string `json:"status"`
-				State             string `json:"state"`
-				ProfileName       string `json:"profileName"`
-				ProfilePictureUrl string `json:"profilePicUrl"`
-				ProfileStatus     string `json:"profileStatus"`
-                                Number            string `json:"number"`
-				Instance          *struct {
-					Status string `json:"status"`
-					State  string `json:"state"`
-				} `json:"instance"`
+	log.Printf("[NEXBOT] Verificando instância '%s' na Evolution... (número atual: %s)", s.SessionName, s.Number)
+
+	// Buscar status na Evolution API
+	data, code, _ := callEvolution("GET", fmt.Sprintf("/instance/fetchInstances?instanceName=%s", s.SessionName), nil)
+
+	if code == 200 {
+		// Parse da resposta - Evolution v2.3.6 retorna dados na raiz
+		var instances []struct {
+			ConnectionStatus string `json:"connectionStatus"`
+			Status           string `json:"status"`
+			State            string `json:"state"`
+			ProfileName      string `json:"profileName"`
+			ProfilePicUrl    string `json:"profilePicUrl"`
+			ProfileStatus    string `json:"profileStatus"`
+			Number           string `json:"number"`
+			OwnerJid         string `json:"ownerJid"`
+		}
+
+		if json.Unmarshal(data, &instances) == nil && len(instances) > 0 {
+			inst := instances[0]
+
+			// Determinar status - Evolution v2.3.6 usa connectionStatus
+			statusRaw := strings.ToLower(inst.ConnectionStatus)
+			if statusRaw == "" {
+				statusRaw = strings.ToLower(inst.Status)
+			}
+			if statusRaw == "" {
+				statusRaw = strings.ToLower(inst.State)
 			}
 
-			if json.Unmarshal(data, &instances) == nil && len(instances) > 0 {
-				inst := instances[0]
-				
-				// Lógica de Prioridade: Raiz > Fallback
-				statusRaw := strings.ToLower(inst.ConnectionStatus)
-				if statusRaw == "" { statusRaw = strings.ToLower(inst.Status) }
-				if statusRaw == "" { statusRaw = strings.ToLower(inst.State) }
-				
-				// Fallback se estiver aninhado
-				if statusRaw == "" && inst.Instance != nil {
-					statusRaw = strings.ToLower(inst.Instance.Status)
-					if statusRaw == "" { statusRaw = strings.ToLower(inst.Instance.State) }
+			log.Printf("[NEXBOT] Status Evolution: '%s' | Number: '%s' | OwnerJid: '%s'", statusRaw, inst.Number, inst.OwnerJid)
+
+			newStatus := "DISCONNECTED"
+			if statusRaw == "open" || statusRaw == "connected" {
+				newStatus = "CONNECTED"
+			} else if statusRaw == "connecting" {
+				newStatus = "CONNECTING"
+			}
+
+			// Atualiza dados do perfil
+			pic := inst.ProfilePicUrl
+			name := inst.ProfileName
+			pStatus := inst.ProfileStatus
+			number := inst.Number
+
+			// Extrair número do ownerJid se não tiver
+			if number == "" && inst.OwnerJid != "" {
+				parts := strings.Split(inst.OwnerJid, "@")
+				if len(parts) > 0 {
+					number = parts[0]
 				}
+				log.Printf("[NEXBOT] Número extraído do ownerJid: %s", number)
+			}
 
-				log.Printf("[NEXBOT] Status encontrado: '%s'", statusRaw)
+			// Fallbacks
+			if pic == "" {
+				pic = s.ProfilePic
+			}
+			if pic == "" && newStatus == "CONNECTED" {
+				pic = "https://ui-avatars.com/api/?name=" + s.SessionName + "&background=10b981&color=fff&size=200"
+			}
+			if name == "" {
+				name = s.ProfileName
+			}
+			if name == "" {
+				name = s.SessionName
+			}
+			if number == "" {
+				number = s.Number
+			}
 
-				newStatus := "DISCONNECTED"
+			// Atualizar banco
+			_, dbErr := db.Exec(`UPDATE sessions SET status=$1, profile_name=$2, profile_pic=$3, profile_status=$4, number=$5 WHERE user_id=$6`,
+				newStatus, name, pic, pStatus, number, userID)
 
-				if statusRaw == "open" || statusRaw == "connected" {
-					newStatus = "CONNECTED"
-				} else if statusRaw == "connecting" {
-					newStatus = "QRCODE" // Ou mantemos CONNECTING se preferir
-				}
+			if dbErr != nil {
+				log.Printf("[NEXBOT] ERRO ao atualizar banco: %v", dbErr)
+			} else {
+				log.Printf("[NEXBOT] ✅ Banco atualizado: status=%s, name=%s, number=%s", newStatus, name, number)
+			}
 
-				// Atualiza dados do perfil
-pic := inst.ProfilePictureUrl
-name := inst.ProfileName
-pStatus := inst.ProfileStatus
+			s.Status = newStatus
+			s.ProfileName = name
+			s.ProfilePic = pic
+			s.ProfileStatus = pStatus
+			s.Number = number
 
-// --- NOVO BLOCO ADICIONADO: buscar foto oficial via Evolution ---
-if newStatus == "CONNECTED" {
-    picData, picStatus, _ := callEvolution("GET", fmt.Sprintf("/chat/fetchProfilePictureUrl/%s", s.SessionName), nil)
+			// Se conectado, buscar settings
+			if newStatus == "CONNECTED" {
+				settingsData, settingsCode, _ := callEvolution("GET", fmt.Sprintf("/settings/find/%s", s.SessionName), nil)
+				if settingsCode == 200 {
+					var sets struct {
+						RejectCall   bool   `json:"rejectCall"`
+						MsgCall      string `json:"msgCall"`
+						GroupsIgnore bool   `json:"groupsIgnore"`
+						AlwaysOnline bool   `json:"alwaysOnline"`
+						ReadMessages bool   `json:"readMessages"`
+						ReadStatus   bool   `json:"readStatus"`
+					}
 
-    if picStatus == 200 {
-        var resp map[string]interface{}
-        if json.Unmarshal(picData, &resp) == nil {
-            if url, ok := resp["url"].(string); ok && url != "" {
-                pic = url
-            }
-        }
-    }
-}
-// ----------------------------------------------------------------
+					if json.Unmarshal(settingsData, &sets) == nil {
+						s.RejectCall = sets.RejectCall
+						s.MsgCall = sets.MsgCall
+						s.GroupsIgnore = sets.GroupsIgnore
+						s.AlwaysOnline = sets.AlwaysOnline
+						s.ReadMessages = sets.ReadMessages
+						s.ReadStatus = sets.ReadStatus
 
-// Fallbacks
-if pic == "" { pic = s.ProfilePic }
-if newStatus == "CONNECTED" && pic == "" {
-    pic = "https://ui-avatars.com/api/?name=" + s.SessionName + "&background=10b981&color=fff&size=200"
-}
-
-if name == "" { name = s.ProfileName }
-if name == "" { name = s.SessionName }
-
-// Atualizar banco
-db.Exec(`UPDATE sessions SET status=$1, profile_name=$2, profile_pic=$3, profile_status=$4, number=$5 WHERE user_id=$6`,
-    newStatus, name, pic, pStatus, inst.Number, userID)
-
-s.Status = newStatus
-s.ProfileName = name
-s.ProfilePic = pic
-s.ProfileStatus = pStatus
-s.Number = inst.Number
-
-
-				if newStatus == "CONNECTED" {
-					// Busca configurações
-					settingsData, settingsCode, _ := callEvolution("GET", fmt.Sprintf("/settings/find/%s", s.SessionName), nil)
-					if settingsCode == 200 {
-						var sets struct {
-							RejectCall   bool   `json:"rejectCall"`
-							MsgCall      string `json:"msgCall"`
-							GroupsIgnore bool   `json:"groupsIgnore"`
-							AlwaysOnline bool   `json:"alwaysOnline"`
-							ReadMessages bool   `json:"readMessages"`
-							ReadStatus   bool   `json:"readStatus"`
-						}
-						
-						if json.Unmarshal(settingsData, &sets) == nil {
-							s.RejectCall = sets.RejectCall
-							s.MsgCall = sets.MsgCall
-							s.GroupsIgnore = sets.GroupsIgnore
-							s.AlwaysOnline = sets.AlwaysOnline
-							s.ReadMessages = sets.ReadMessages
-							s.ReadStatus = sets.ReadStatus
-
-							db.Exec(`UPDATE sessions SET reject_call=$1, msg_call=$2, groups_ignore=$3, always_online=$4, read_messages=$5, read_status=$6 WHERE user_id=$7`,
-								s.RejectCall, s.MsgCall, s.GroupsIgnore, s.AlwaysOnline, s.ReadMessages, s.ReadStatus, userID)
-						}
+						db.Exec(`UPDATE sessions SET reject_call=$1, msg_call=$2, groups_ignore=$3, always_online=$4, read_messages=$5, read_status=$6 WHERE user_id=$7`,
+							s.RejectCall, s.MsgCall, s.GroupsIgnore, s.AlwaysOnline, s.ReadMessages, s.ReadStatus, userID)
 					}
 				}
 			}
-		} else if code == 404 {
-			db.Exec("UPDATE sessions SET status='DISCONNECTED' WHERE user_id=$1", userID)
-			s.Status = "DISCONNECTED"
 		}
+	} else if code == 404 {
+		db.Exec("UPDATE sessions SET status='DISCONNECTED' WHERE user_id=$1", userID)
+		s.Status = "DISCONNECTED"
 	}
+
+	// Log final do que será retornado
+	log.Printf("[NEXBOT] 📤 Retornando: status=%s, name=%s, number=%s", s.Status, s.ProfileName, s.Number)
 
 	return c.JSON(s)
 }
@@ -420,12 +437,6 @@ func connectWhatsApp(c *fiber.Ctx) error {
 		"qrcode":       true,
 		"number":       cleanNumber,
 		"integration":  "WHATSAPP-BAILEYS",
-		"rejectCall":   false,
-		"msgCall":      "Desculpe, não aceitamos chamadas de voz ou vídeo.",
-		"groupsIgnore": false,
-		"alwaysOnline": false,
-		"readMessages": false,
-		"readStatus":   false,
 	}
 
 	createResp, status, err := callEvolution("POST", "/instance/create", createPayload)
@@ -438,21 +449,23 @@ func connectWhatsApp(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Erro ao criar instância (status %d)", status)})
 	}
 
-	// Salvar no banco
+	// Salvar no banco COM O NÚMERO
 	var sessionId int
 	db.QueryRow("SELECT id FROM sessions WHERE user_id=$1", userID).Scan(&sessionId)
 	if sessionId == 0 {
-		db.Exec(`INSERT INTO sessions (user_id, session_name, status) VALUES ($1, $2, 'CONNECTING')`, userID, instanceName)
+		db.Exec(`INSERT INTO sessions (user_id, session_name, status, number) VALUES ($1, $2, 'CONNECTING', $3)`, userID, instanceName, cleanNumber)
 	} else {
-		db.Exec(`UPDATE sessions SET session_name=$1, status='CONNECTING' WHERE id=$2`, instanceName, sessionId)
+		db.Exec(`UPDATE sessions SET session_name=$1, status='CONNECTING', number=$2 WHERE id=$3`, instanceName, cleanNumber, sessionId)
 	}
+
+	log.Printf("[NEXBOT] Sessão salva no banco: instance=%s, number=%s", instanceName, cleanNumber)
 
 	time.Sleep(3 * time.Second)
 
 	result := fiber.Map{"status": "CREATED", "instance": instanceName}
 
 	// QR CODE
-	if req.Method == "qrcode" {
+	if req.Method == "qrcode" || req.Method == "" {
 		qrData, _, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s", instanceName), nil)
 		finalQR := extractQRCode(qrData)
 
@@ -510,73 +523,83 @@ func connectWhatsApp(c *fiber.Ctx) error {
 }
 
 // ============================================
-// POST /whatsapp/reconnect - Reconectar instância
+// POST /whatsapp/reconnect - Reconectar instância existente
 // ============================================
 func reconnectWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 
-	var req struct {
-		Method      string `json:"method"`
-		PhoneNumber string `json:"phone_number"`
-	}
-	c.BodyParser(&req)
-
-	var sessionName string
-	db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName)
+	var sessionName, number string
+	db.QueryRow("SELECT session_name, COALESCE(number, '') FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName, &number)
 
 	if sessionName == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Nenhuma instância encontrada"})
 	}
 
-	reg, _ := regexp.Compile("[^0-9]+")
-	cleanNumber := reg.ReplaceAllString(req.PhoneNumber, "")
-	if cleanNumber != "" && !strings.HasPrefix(cleanNumber, "55") {
-		cleanNumber = "55" + cleanNumber
-	}
+	log.Printf("[NEXBOT] Reconectando instância %s (número: %s)", sessionName, number)
 
-	log.Printf("[NEXBOT] Reconectando instância %s", sessionName)
+	// Verificar se instância existe na Evolution
+	fetchData, fetchCode, _ := callEvolution("GET", fmt.Sprintf("/instance/fetchInstances?instanceName=%s", sessionName), nil)
 
-	result := fiber.Map{"status": "RECONNECTING", "instance": sessionName}
+	if fetchCode != 200 {
+		// Instância não existe, precisa recriar
+		log.Printf("[NEXBOT] Instância não existe na Evolution, recriando...")
 
-	if req.Method == "qrcode" || req.Method == "" {
-		qrData, _, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
-		finalQR := extractQRCode(qrData)
-
-		if finalQR == "" {
-			time.Sleep(2 * time.Second)
-			qrData, _, _ = callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
-			finalQR = extractQRCode(qrData)
+		createPayload := map[string]interface{}{
+			"instanceName": sessionName,
+			"token":        "nexbot-" + sessionName,
+			"qrcode":       true,
+			"number":       number,
+			"integration":  "WHATSAPP-BAILEYS",
 		}
 
-		if finalQR != "" {
-			if !strings.HasPrefix(finalQR, "data:image") {
-				finalQR = "data:image/png;base64," + finalQR
-			}
-			db.Exec("UPDATE sessions SET status='QRCODE', qr_code=$1 WHERE user_id=$2", finalQR, userID)
-			result["status"] = "QRCODE"
-			result["qr_code"] = finalQR
+		_, createStatus, _ := callEvolution("POST", "/instance/create", createPayload)
+		if createStatus != 200 && createStatus != 201 {
+			return c.Status(500).JSON(fiber.Map{"error": "Falha ao recriar instância"})
 		}
-	} else if req.Method == "pairing" && cleanNumber != "" {
-		callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
 		time.Sleep(2 * time.Second)
-
-		pairData, _, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s?number=%s", sessionName, cleanNumber), nil)
-		code := extractPairingCode(pairData)
-
-		if code != "" {
-			code = strings.ToUpper(strings.TrimSpace(code))
-			if len(code) == 8 && !strings.Contains(code, "-") {
-				code = code[:4] + "-" + code[4:]
+	} else {
+		// Verificar status atual
+		var instances []struct {
+			ConnectionStatus string `json:"connectionStatus"`
+		}
+		if json.Unmarshal(fetchData, &instances) == nil && len(instances) > 0 {
+			if strings.ToLower(instances[0].ConnectionStatus) == "open" {
+				// Já está conectado!
+				db.Exec("UPDATE sessions SET status='CONNECTED' WHERE user_id=$1", userID)
+				return c.JSON(fiber.Map{"status": "CONNECTED", "message": "Já está conectado!"})
 			}
-			db.Exec("UPDATE sessions SET status='PAIRING' WHERE user_id=$1", userID)
-			result["status"] = "PAIRING"
-			result["pairing_code"] = code
 		}
 	}
 
-	return c.JSON(result)
+	// Gerar QR Code
+	qrData, _, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
+	finalQR := extractQRCode(qrData)
+
+	if finalQR == "" {
+		time.Sleep(2 * time.Second)
+		qrData, _, _ = callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
+		finalQR = extractQRCode(qrData)
+	}
+
+	if finalQR == "" {
+		return c.Status(500).JSON(fiber.Map{"error": "QR Code não disponível. Tente novamente."})
+	}
+
+	if !strings.HasPrefix(finalQR, "data:image") {
+		finalQR = "data:image/png;base64," + finalQR
+	}
+
+	db.Exec("UPDATE sessions SET status='QRCODE', qr_code=$1 WHERE user_id=$2", finalQR, userID)
+
+	return c.JSON(fiber.Map{
+		"status":  "QRCODE",
+		"qr_code": finalQR,
+	})
 }
 
+// ============================================
+// PUT /whatsapp/settings - Atualizar configurações
+// ============================================
 func updateWhatsAppSettings(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var req WhatsAppSettingsRequest
@@ -604,7 +627,7 @@ func updateWhatsAppSettings(c *fiber.Ctx) error {
 	_, status, _ := callEvolution("POST", fmt.Sprintf("/settings/set/%s", sessionName), settingsPayload)
 
 	if status != 200 && status != 201 {
-		return c.Status(500).JSON(fiber.Map{"error": "Falha ao atualizar configurações"})
+		return c.Status(500).JSON(fiber.Map{"error": "Falha ao atualizar configurações na Evolution"})
 	}
 
 	db.Exec(`UPDATE sessions SET reject_call=$1, msg_call=$2, groups_ignore=$3, always_online=$4, read_messages=$5, read_status=$6 WHERE user_id=$7`,
@@ -615,96 +638,28 @@ func updateWhatsAppSettings(c *fiber.Ctx) error {
 
 func restartWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
-
 	var sessionName string
-	db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).
-		Scan(&sessionName)
-
-	if sessionName == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "Nenhuma instância encontrada."})
-	}
-
-	log.Printf("[NEXBOT] Reiniciando instância '%s'...", sessionName)
-
-	// 1 — DESLOGAR
-	callEvolution("DELETE", fmt.Sprintf("/instance/logout/%s", sessionName), nil)
-
-	// 2 — AGUARDAR DESCONECTAR COMPLETAMENTE
-	for i := 0; i < 10; i++ { // tenta por até 10 segundos
-		time.Sleep(1 * time.Second)
-
-		statusData, code, _ := callEvolution("GET",
-			fmt.Sprintf("/instance/fetchInstances?instanceName=%s", sessionName), nil)
-
-		if code != 200 {
-			continue
-		}
-
-		var inst []map[string]interface{}
-		if json.Unmarshal(statusData, &inst) == nil && len(inst) > 0 {
-			state := strings.ToLower(fmt.Sprint(inst[0]["connectionStatus"]))
-
-			log.Printf("[NEXBOT] Estado atual da instância após logout: %s", state)
-
-			if state == "disconnected" || state == "close" {
-				break
-			}
-
-			if i == 9 {
-				return c.Status(500).JSON(fiber.Map{"error": "A Evolution não finalizou o logout."})
-			}
+	db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName)
+	if sessionName != "" {
+		_, code, _ := callEvolution("PUT", fmt.Sprintf("/instance/restart/%s", sessionName), nil)
+		if code == 200 || code == 201 {
+			return c.JSON(fiber.Map{"message": "Instância reiniciada!"})
 		}
 	}
-
-	// 3 — GERAR NOVO QR CODE
-	qrData, _, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
-	finalQR := extractQRCode(qrData)
-
-	if finalQR == "" {
-		time.Sleep(2 * time.Second)
-		qrData, _, _ = callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
-		finalQR = extractQRCode(qrData)
-	}
-
-	if finalQR == "" {
-		log.Printf("[NEXBOT] ❌ QR não retornado. Resposta da Evolution: %s", string(qrData))
-		return c.Status(500).JSON(fiber.Map{"error": "Evolution não gerou QR. Veja os logs."})
-	}
-
-	if !strings.HasPrefix(finalQR, "data:image") {
-		finalQR = "data:image/png;base64," + finalQR
-	}
-
-	// 4 — Atualizar banco
-	db.Exec("UPDATE sessions SET status='QRCODE', qr_code=$1 WHERE user_id=$2",
-		finalQR, userID)
-
-	return c.JSON(fiber.Map{
-		"status":  "QRCODE",
-		"qr_code": finalQR,
-	})
+	return c.Status(500).JSON(fiber.Map{"error": "Falha ao reiniciar"})
 }
 
 func deleteWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
-
 	var sessionName string
-	db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).
-		Scan(&sessionName)
-
+	db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName)
 	if sessionName != "" {
-		// Deslogar
 		callEvolution("DELETE", fmt.Sprintf("/instance/logout/%s", sessionName), nil)
 		time.Sleep(1 * time.Second)
-
-		// Deletar
 		callEvolution("DELETE", fmt.Sprintf("/instance/delete/%s", sessionName), nil)
 	}
-
-	// Remover do banco
 	db.Exec("DELETE FROM sessions WHERE user_id=$1", userID)
-
-	return c.JSON(fiber.Map{"message": "Instância excluída completamente!"})
+	return c.JSON(fiber.Map{"message": "Instância deletada!"})
 }
 
 func logoutWhatsApp(c *fiber.Ctx) error {
@@ -719,18 +674,14 @@ func logoutWhatsApp(c *fiber.Ctx) error {
 }
 
 func extractQRCode(data []byte) string {
-	// Tentar vários formatos
 	var resp map[string]interface{}
 	if json.Unmarshal(data, &resp) == nil {
-		// Formato: { "base64": "..." }
 		if v, ok := resp["base64"].(string); ok && v != "" {
 			return v
 		}
-		// Formato: { "code": "..." } (se for QR longo)
 		if v, ok := resp["code"].(string); ok && len(v) > 100 {
 			return v
 		}
-		// Formato: { "qrcode": { "base64": "..." } }
 		if qr, ok := resp["qrcode"].(map[string]interface{}); ok {
 			if v, ok := qr["base64"].(string); ok && v != "" {
 				return v
@@ -743,11 +694,9 @@ func extractQRCode(data []byte) string {
 func extractPairingCode(data []byte) string {
 	var resp map[string]interface{}
 	if json.Unmarshal(data, &resp) == nil {
-		// Formato: { "pairingCode": "ABCD1234" }
 		if v, ok := resp["pairingCode"].(string); ok && v != "" {
 			return v
 		}
-		// Formato: { "code": "ABCD1234" } (se for código curto)
 		if v, ok := resp["code"].(string); ok && len(v) <= 10 {
 			return v
 		}
@@ -755,13 +704,49 @@ func extractPairingCode(data []byte) string {
 	return ""
 }
 
-// Eclipse handlers
+// ============================================
+// ECLIPSE - Salvar configurações com validação
+// ============================================
 func saveEclipseSettings(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var req EclipseSettingsRequest
-	c.BodyParser(&req)
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Dados inválidos"})
+	}
+
+	if req.ApiUrl == "" || req.ApiKey == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "URL e API Key são obrigatórios!"})
+	}
+
+	// Testar conexão real
+	testPayload := map[string]string{
+		"method": "listarUsers",
+		"tipo":   "all",
+	}
+	jsonPayload, _ := json.Marshal(testPayload)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	testReq, _ := http.NewRequest("POST", req.ApiUrl, bytes.NewBuffer(jsonPayload))
+	testReq.Header.Set("Content-Type", "application/json")
+	testReq.Header.Set("apikey", req.ApiKey)
+
+	log.Printf("[ECLIPSE] Testando conexão em %s", req.ApiUrl)
+	resp, err := client.Do(testReq)
+
+	if err != nil {
+		log.Printf("[ECLIPSE] Erro de rede: %v", err)
+		return c.Status(400).JSON(fiber.Map{"error": "Não foi possível conectar na URL informada."})
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		log.Printf("[ECLIPSE] API Recusou. Status: %d", resp.StatusCode)
+		return c.Status(400).JSON(fiber.Map{"error": "A API do Eclipse recusou a conexão. Verifique a API Key."})
+	}
+
 	db.Exec("UPDATE clients SET eclipse_api_url=$1, eclipse_api_key=$2 WHERE user_id=$3", req.ApiUrl, req.ApiKey, userID)
-	return c.JSON(fiber.Map{"message": "Salvo!"})
+	return c.JSON(fiber.Map{"message": "Conexão Aprovada e Salva!"})
 }
 
 func getEclipseSettings(c *fiber.Ctx) error {
@@ -798,35 +783,136 @@ func verifyEmailCode(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Verificado!"})
 }
 
+// ============================================
+// ECLIPSE - Criar Teste/Usuário (ATUALIZADO)
+// ============================================
 func createEclipseTest(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var req CreateTestRequest
-	c.BodyParser(&req)
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Dados inválidos"})
+	}
+
 	var apiUrl, apiKey sql.NullString
 	db.QueryRow("SELECT eclipse_api_url, eclipse_api_key FROM clients WHERE user_id=$1", userID).Scan(&apiUrl, &apiKey)
-	if !apiUrl.Valid {
-		return c.Status(400).JSON(fiber.Map{"error": "Configure a API Eclipse"})
+
+	if !apiUrl.Valid || apiUrl.String == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Configure a API Eclipse primeiro"})
 	}
-	validade := 60
-	if req.Duration > 0 {
-		validade = req.Duration
+	if !apiKey.Valid || apiKey.String == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "API Key não configurada"})
 	}
-	payload := map[string]interface{}{"method": "CriarTest", "login": req.Login, "senha": req.Password, "limite": 1, "validade": validade, "valor": 0, "modo_conta": "ssh", "categoria": 1, "sendzap": true}
+
+	// Definir método padrão
+	method := req.Method
+	if method == "" {
+		method = "CriarTest"
+	}
+
+	// Definir valores padrão
+	limite := req.Limite
+	if limite == 0 {
+		limite = 1
+	}
+	validade := req.Validade
+	if validade == 0 {
+		validade = 60
+	}
+	modoConta := req.ModoConta
+	if modoConta == "" {
+		modoConta = "ssh"
+	}
+	categoria := req.Categoria
+	if categoria == 0 {
+		categoria = 1
+	}
+
+	// Montar payload conforme documentação da API Eclipse
+	payload := map[string]interface{}{
+		"method":     method,
+		"login":      req.Login,
+		"senha":      req.Senha,
+		"limite":     limite,
+		"validade":   validade,
+		"valor":      req.Valor,
+		"modo_conta": modoConta,
+		"categoria":  categoria,
+		"sendzap":    req.SendZap,
+	}
+
+	// Adicionar número se fornecido
+	if req.Numero != "" {
+		payload["numero"] = req.Numero
+	}
+
+	// Adicionar período se for CriarUser
+	if method == "CriarUser" && req.Periodo > 0 {
+		payload["periodo"] = req.Periodo
+	}
+
+	log.Printf("[ECLIPSE] Enviando para %s: method=%s, login=%s", apiUrl.String, method, req.Login)
+
 	jsonData, _ := json.Marshal(payload)
-	client := &http.Client{Timeout: 10 * time.Second}
-	httpReq, _ := http.NewRequest("POST", apiUrl.String, bytes.NewBuffer(jsonData))
+	client := &http.Client{Timeout: 15 * time.Second}
+	httpReq, err := http.NewRequest("POST", apiUrl.String, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Erro ao criar requisição"})
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("apikey", apiKey.String)
-	resp, _ := client.Do(httpReq)
-	if resp != nil {
-		defer resp.Body.Close()
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		log.Printf("[ECLIPSE] Erro na requisição: %v", err)
+		return c.Status(502).JSON(fiber.Map{"error": "Não foi possível conectar à API Eclipse"})
 	}
-	
-	if resp == nil || resp.StatusCode != 200 {
-		return c.Status(400).JSON(fiber.Map{"error": "Eclipse recusou"})
+	defer resp.Body.Close()
+
+	// Ler resposta
+	respBody, _ := io.ReadAll(resp.Body)
+	log.Printf("[ECLIPSE] Status: %d | Resposta: %s", resp.StatusCode, string(respBody))
+
+	if resp.StatusCode != 200 {
+		var errResp map[string]interface{}
+		if json.Unmarshal(respBody, &errResp) == nil {
+			if msg, ok := errResp["message"].(string); ok {
+				return c.Status(400).JSON(fiber.Map{"error": msg})
+			}
+			if msg, ok := errResp["erro"].(string); ok {
+				return c.Status(400).JSON(fiber.Map{"error": msg})
+			}
+		}
+		return c.Status(400).JSON(fiber.Map{"error": "Eclipse recusou a requisição"})
 	}
-	db.Exec(`INSERT INTO eclipse_tests (user_id, login_generated, password_generated, duration_minutes, status, expires_at) VALUES ($1, $2, $3, $4, 'active', NOW() + INTERVAL '1 minute' * $4)`, userID, req.Login, req.Password, validade)
-	return c.JSON(fiber.Map{"success": true, "login": req.Login})
+
+	// Parsear resposta para extrair xray se existir
+	var eclipseResp map[string]interface{}
+	json.Unmarshal(respBody, &eclipseResp)
+
+	// Salvar no banco local
+	db.Exec(`INSERT INTO eclipse_tests (user_id, login_generated, password_generated, duration_minutes, status, expires_at) 
+		VALUES ($1, $2, $3, $4, 'active', NOW() + INTERVAL '1 minute' * $4)`,
+		userID, req.Login, req.Senha, validade)
+
+	// Retornar sucesso com dados
+	result := fiber.Map{
+		"success": true,
+		"login":   req.Login,
+		"senha":   req.Senha,
+	}
+
+	// Adicionar xray se existir na resposta
+	if xray, ok := eclipseResp["xray"].(string); ok && xray != "" {
+		result["xray"] = xray
+	}
+	if xray, ok := eclipseResp["v2ray"].(string); ok && xray != "" {
+		result["xray"] = xray
+	}
+
+	log.Printf("[ECLIPSE] ✅ Criado com sucesso: %s", req.Login)
+
+	return c.JSON(result)
 }
 
 func listUsers(c *fiber.Ctx) error {
