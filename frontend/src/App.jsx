@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import Sidebar from './components/Sidebar';
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import WhatsAppSession from './pages/WhatsAppSession';
-import FlowBuilder from './pages/FlowBuilder';
-import SettingsPage from './pages/Settings';
-import EclipsePlugin from './pages/EclipsePlugin';
-import AdminPlugins from './pages/Admin';
+import Sidebar from './components/Sidebar.jsx';
+import Login from './pages/Login.jsx';
+import Dashboard from './pages/Dashboard.jsx';
+import WhatsAppSession from './pages/WhatsAppSession.jsx';
+import FlowBuilder from './pages/FlowBuilder.jsx';
+import SettingsPage from './pages/Settings.jsx';
+import EclipsePlugin from './pages/EclipsePlugin.jsx';
+import AdminPlugins from './pages/Admin.jsx';
 
 const API_BASE = `http://${window.location.hostname}:8080/api/nexbot`;
 
@@ -41,7 +41,6 @@ const api = {
     return await res.json();
   },
 
-  // Reconectar instância existente (sem criar nova)
   reconnectWhatsApp: async (data) => {
     const res = await fetch(`${API_BASE}/whatsapp/reconnect`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data || {}) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao reconectar'); }
@@ -91,6 +90,34 @@ const api = {
     const res = await fetch(`${API_BASE}/eclipse/create-test`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(data) });
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao criar teste'); }
     return await res.json();
+  },
+
+  // ==========================================
+  // FLOW BUILDER
+  // ==========================================
+  listFlows: async () => {
+    const res = await fetch(`${API_BASE}/flows`, { headers: getAuthHeader() });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao listar fluxos'); }
+    const data = await res.json();
+    return data.flows; // O backend retorna { flows: [...] }
+  },
+
+  getFlow: async (flowId) => {
+    const res = await fetch(`${API_BASE}/flows/${flowId}`, { headers: getAuthHeader() });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao obter fluxo'); }
+    return await res.json();
+  },
+
+  saveFlow: async (flowData) => {
+    const res = await fetch(`${API_BASE}/flows`, { method: 'POST', headers: getAuthHeader(), body: JSON.stringify(flowData) });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao salvar fluxo'); }
+    return await res.json();
+  },
+
+  deleteFlow: async (flowId) => {
+    const res = await fetch(`${API_BASE}/flows/${flowId}`, { method: 'DELETE', headers: getAuthHeader() });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Erro ao excluir fluxo'); }
+    return await res.json();
   }
 };
 
@@ -103,7 +130,7 @@ export default function App() {
   useEffect(() => { if (theme === 'dark') document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark'); }, [theme]);
   useEffect(() => { const token = localStorage.getItem('nexbot_token'); if (token) setAuth({ role: 'admin', plugins: ['eclipse'] }); }, []);
 
-  const handleLogin = async (creds) => { const data = await api.login(creds); setAuth(data); setView('admin_dash'); };
+  const handleLogin = async (creds) => { const data = await api.login(creds); setAuth(data); setView('dashboard'); }; 
   const logout = () => { localStorage.removeItem('nexbot_token'); setAuth(null); }
 
   if (!auth) return <Login onLogin={handleLogin} theme={theme} />;
@@ -114,13 +141,13 @@ export default function App() {
       <div className="flex-1 ml-20 md:ml-64 transition-all duration-300">
         {view === 'dashboard' && <Dashboard />}
         {view === 'settings' && <SettingsPage settings={settings} setSettings={setSettings} />}
-        {view === 'eclipse' && <EclipsePlugin api={api} />}
+        {/* Passando a API e setView */}
+        {view === 'eclipse' && <EclipsePlugin api={api} setView={setView} />} 
         {view === 'admin_dash' && <div className="p-8"><h1 className="text-3xl font-bold">Painel Administrativo</h1></div>}
         {view === 'plugins' && <AdminPlugins setView={setView} />}
-        {view === 'flows' && <FlowBuilder />}
+        {view === 'flows' && <FlowBuilder api={api} setView={setView} />} {/* Passando a API e setView para o FlowBuilder */}
         {view === 'sessions' && <WhatsAppSession api={api} />}
       </div>
     </div>
   );
 }
-

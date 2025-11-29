@@ -63,6 +63,7 @@ type ConnectRequest struct {
 	InstanceName string `json:"instance_name"`
 	Method       string `json:"method"`
 	PhoneNumber  string `json:"phone_number"`
+	Number       string `json:"number"`
 }
 
 type EclipseSettingsRequest struct {
@@ -70,7 +71,6 @@ type EclipseSettingsRequest struct {
 	ApiKey string `json:"api_key"`
 }
 
-// Struct atualizado para Eclipse com todos os campos da API
 type CreateTestRequest struct {
 	Method    string  `json:"method"`
 	Login     string  `json:"login"`
@@ -92,6 +92,33 @@ type VerifyCodeRequest struct {
 	Code  string `json:"code"`
 }
 
+// ============================================
+// NOVAS STRUCTS PARA FLOW BUILDER
+// ============================================
+// O campo Content é `json.RawMessage` para lidar com a entrada de string JSON
+// do frontend, e o NextStepID é um ponteiro para facilitar a omissão no JSON.
+type FlowStep struct {
+	ID         int               `json:"id"`
+	StepType   string            `json:"step_type"` // text, image, delay, condition, api
+	Content    json.RawMessage   `json:"content"`   // json.RawMessage para receber o JSON como string e salvar como JSONB
+	PositionX  int               `json:"position_x"`
+	PositionY  int               `json:"position_y"`
+	NextStepID *int              `json:"next_step_id,omitempty"` // OmitEmpty é crucial para que o frontend não envie "0"
+}
+
+type Flow struct {
+	ID             int        `json:"id"`
+	UserID         int        `json:"user_id"`
+	Name           string     `json:"name"`
+	IsActive       bool       `json:"is_active"`
+	TriggerKeyword string     `json:"trigger_keyword"`
+	CreatedAt      *time.Time `json:"created_at"`
+	Steps          []FlowStep `json:"steps"` // Usado apenas para operações de save/load
+}
+
+// ============================================
+// MAIN
+// ============================================
 func main() {
 	connStr := fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable",
 		os.Getenv("DB_HOST"), os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"), os.Getenv("DB_NAME"))
@@ -122,7 +149,6 @@ func main() {
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS read_status BOOLEAN DEFAULT FALSE;`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS qr_code TEXT;`)
 	
-	// Tabela para logs de testes do Eclipse
 	db.Exec(`CREATE TABLE IF NOT EXISTS eclipse_tests (
 		id SERIAL PRIMARY KEY,
 		user_id INT,
@@ -132,8 +158,28 @@ func main() {
 		status VARCHAR(50),
 		expires_at TIMESTAMP
 	);`)
+	
+	// Migrations para Flow Builder
+	db.Exec(`CREATE TABLE IF NOT EXISTS flows (
+		id SERIAL PRIMARY KEY,
+		user_id INT REFERENCES users(id) ON DELETE CASCADE,
+		name VARCHAR(100) NOT NULL,
+		is_active BOOLEAN DEFAULT TRUE,
+		trigger_keyword VARCHAR(50),
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS flows_steps (
+		id SERIAL PRIMARY KEY,
+		flow_id INT REFERENCES flows(id) ON DELETE CASCADE,
+		step_type VARCHAR(20), 
+		content JSONB,
+		position_x INT,
+		position_y INT,
+		next_step_id INT REFERENCES flows_steps(id)
+	);`)
 
-	app := fiber.New(fiber.Config{AppName: "NexBot API v2.0"})
+
+	app := fiber.New(fiber.Config{AppName: "NexBot API v2.1 (Flows)"})
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
@@ -145,14 +191,17 @@ func main() {
 	api.Post("/auth/login", login)
 	v1 := api.Group("/", authMiddleware)
 
+	// Rotas do WhatsApp
 	v1.Get("/whatsapp", getWhatsApp)
 	v1.Post("/whatsapp/connect", connectWhatsApp)
 	v1.Post("/whatsapp/reconnect", reconnectWhatsApp)
 	v1.Put("/whatsapp/settings", updateWhatsAppSettings)
+	v1.Post("/whatsapp/settings", updateWhatsAppSettings) // Permite POST também
 	v1.Post("/whatsapp/logout", logoutWhatsApp)
 	v1.Post("/whatsapp/restart", restartWhatsApp)
 	v1.Post("/whatsapp/delete", deleteWhatsApp)
 
+	// Rotas do Eclipse
 	v1.Post("/eclipse/settings", saveEclipseSettings)
 	v1.Get("/eclipse/settings", getEclipseSettings)
 	v1.Post("/eclipse/request-trial", requestEclipseTrial)
@@ -160,8 +209,220 @@ func main() {
 	v1.Post("/eclipse/create-test", createEclipseTest)
 	v1.Get("/admin/users", listUsers)
 
-	log.Println("🚀 NexBot API v2.0 iniciando na porta 8080...")
+	// ============================================
+	// NOVAS ROTAS DO FLOW BUILDER
+	// ============================================
+	v1.Get("/flows", listFlows)
+	v1.Post("/flows", saveFlow) // Cria ou Atualiza
+	v1.Get("/flows/:id", getFlow)
+	v1.Delete("/flows/:id", deleteFlow)
+
+	log.Println("🚀 NexBot API v2.1 (Flows) iniciando na porta 8080...")
 	log.Fatal(app.Listen(":8080"))
+}
+
+// ... [Funções callEvolution, truncateLog, authMiddleware, login, getWhatsApp, connectWhatsApp, reconnectWhatsApp, updateWhatsAppSettings, restartWhatsApp, deleteWhatsApp, logoutWhatsApp, extractQRCode, extractPairingCode, saveEclipseSettings, getEclipseSettings, requestEclipseTrial, verifyEmailCode, createEclipseTest, findXrayRecursive, findXrayInString, listUsers] ...
+
+// ============================================
+// CRUD FLOW BUILDER
+// ============================================
+
+// POST /flows - Cria ou atualiza um fluxo completo
+func saveFlow(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(int)
+	var flowReq Flow
+	// CORREÇÃO: Usar um BodyParser que permita o `json.RawMessage` no campo Content
+	// Como FlowStep.Content é json.RawMessage, ele aceitará a string JSON do frontend.
+	if err := c.BodyParser(&flowReq); err != nil {
+		log.Printf("Erro ao parsear body: %v", err)
+		return c.Status(400).JSON(fiber.Map{"error": "Dados do fluxo inválidos ou malformados no JSON"})
+	}
+
+	if flowReq.Name == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "O nome do fluxo é obrigatório"})
+	}
+	
+	tx, err := db.Begin()
+	if err != nil { return c.Status(500).JSON(fiber.Map{"error": "Erro ao iniciar transação"}) }
+
+	var flowID int
+	if flowReq.ID > 0 {
+		// Atualizar fluxo existente
+		_, err = tx.Exec("UPDATE flows SET name=$1, is_active=$2, trigger_keyword=$3 WHERE id=$4 AND user_id=$5",
+			flowReq.Name, flowReq.IsActive, flowReq.TriggerKeyword, flowReq.ID, userID)
+		flowID = flowReq.ID
+		// Limpar passos antigos
+		_, err = tx.Exec("DELETE FROM flows_steps WHERE flow_id=$1", flowID)
+		if err != nil { tx.Rollback(); return c.Status(500).JSON(fiber.Map{"error": "Falha ao limpar passos antigos"}) }
+	} else {
+		// Criar novo fluxo
+		err = tx.QueryRow(
+			"INSERT INTO flows (user_id, name, is_active, trigger_keyword) VALUES ($1, $2, $3, $4) RETURNING id",
+			userID, flowReq.Name, flowReq.IsActive, flowReq.TriggerKeyword,
+		).Scan(&flowID)
+	}
+
+	if err != nil { tx.Rollback(); return c.Status(500).JSON(fiber.Map{"error": "Falha ao salvar o fluxo"}) }
+	
+	// Mapeamento temporário para armazenar IDs antigos e novos dos passos
+	idMap := make(map[int]int) 
+	
+	// 1. Inserir todos os passos e coletar os novos IDs
+	for i := range flowReq.Steps {
+		step := &flowReq.Steps[i]
+		oldID := step.ID // Salva o ID temporário do frontend
+		
+		// O Content já é json.RawMessage, que é essencialmente []byte que representa o JSON.
+		// Não precisamos do json.Marshal, apenas o usamos diretamente (como []byte) no Exec.
+		contentBytes := step.Content
+
+		var newID int
+		err = tx.QueryRow(
+			"INSERT INTO flows_steps (flow_id, step_type, content, position_x, position_y) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+			flowID, step.StepType, contentBytes, step.PositionX, step.PositionY,
+		).Scan(&newID)
+
+		if err != nil { tx.Rollback(); return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Falha ao salvar passo %d: %v", oldID, err)}) }
+
+		idMap[oldID] = newID // Mapeia ID temporário para ID real do DB
+		step.ID = newID      // Atualiza a struct com o ID real
+	}
+
+	// 2. Atualizar as referências next_step_id
+	for _, step := range flowReq.Steps {
+		// CORREÇÃO: O NextStepID é um ponteiro. Verifica se o ponteiro não é nulo.
+		if step.NextStepID != nil && *step.NextStepID > 0 { 
+			oldNextID := *step.NextStepID
+			if newNextID, ok := idMap[oldNextID]; ok {
+				// Atualiza a referência com o novo ID
+				_, err = tx.Exec("UPDATE flows_steps SET next_step_id=$1 WHERE id=$2", newNextID, step.ID)
+				if err != nil { tx.Rollback(); return c.Status(500).JSON(fiber.Map{"error": "Falha ao vincular passos"}) }
+			} else {
+				// Se o next_step_id não for mapeado, deve ser uma nova conexão para um nó novo que acabou de ser inserido.
+				// Como mapeamos todos os novos IDs no passo 1, se não estiver aqui, é um erro de lógica do frontend ou
+				// a conexão aponta para um nó deletado. Omitimos silenciosamente.
+				log.Printf("[SAVE FLOW] Aviso: NextStepID %d não encontrado no mapa de IDs, ignorando vinculo para passo %d", oldNextID, step.ID)
+			}
+		} else {
+			// Se NextStepID for nil (o que acontece se o frontend omitir o campo) ou 0, garante que o campo seja NULL no DB.
+			_, err = tx.Exec("UPDATE flows_steps SET next_step_id=NULL WHERE id=$1", step.ID)
+			if err != nil { tx.Rollback(); return c.Status(500).JSON(fiber.Map{"error": "Falha ao desvincular passos"}) }
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Falha ao finalizar transação"})
+	}
+
+	return c.Status(200).JSON(fiber.Map{"id": flowID, "message": "Fluxo salvo com sucesso"})
+}
+
+// GET /flows - Lista todos os fluxos do usuário
+func listFlows(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(int)
+	rows, err := db.Query(`
+		SELECT id, name, is_active, trigger_keyword, created_at
+		FROM flows WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+	
+	if err != nil { return c.Status(500).JSON(fiber.Map{"error": "Falha ao listar fluxos"}) }
+	defer rows.Close()
+
+	var flows []Flow
+	for rows.Next() {
+		var f Flow
+		var keyword sql.NullString
+		if err := rows.Scan(&f.ID, &f.Name, &f.IsActive, &keyword, &f.CreatedAt); err != nil {
+			log.Printf("[DB ERROR] Falha ao scanear fluxo: %v", err)
+			continue
+		}
+		f.UserID = userID
+		f.TriggerKeyword = keyword.String
+		flows = append(flows, f)
+	}
+
+	return c.JSON(fiber.Map{"flows": flows})
+}
+
+// GET /flows/:id - Obtém um fluxo e seus passos
+func getFlow(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(int)
+	flowID := c.Params("id")
+
+	var f Flow
+	var keyword sql.NullString
+
+	// 1. Busca os dados principais do fluxo
+	err := db.QueryRow(`
+		SELECT id, name, is_active, trigger_keyword, created_at
+		FROM flows WHERE id=$1 AND user_id=$2`, flowID, userID).
+		Scan(&f.ID, &f.Name, &f.IsActive, &keyword, &f.CreatedAt)
+
+	if err == sql.ErrNoRows {
+		return c.Status(404).JSON(fiber.Map{"error": "Fluxo não encontrado"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Falha ao buscar fluxo"})
+	}
+
+	f.UserID = userID
+	f.TriggerKeyword = keyword.String
+
+	// 2. Busca os passos associados
+	stepRows, err := db.Query(`
+		SELECT id, step_type, content, position_x, position_y, next_step_id 
+		FROM flows_steps WHERE flow_id=$1`, flowID)
+
+	if err != nil { return c.Status(500).JSON(fiber.Map{"error": "Falha ao buscar passos"}) }
+	defer stepRows.Close()
+
+	var steps []FlowStep
+	for stepRows.Next() {
+		var s FlowStep
+		var contentJSON []byte
+		var nextStepID sql.NullInt32
+
+		if err := stepRows.Scan(&s.ID, &s.StepType, &contentJSON, &s.PositionX, &s.PositionY, &nextStepID); err != nil {
+			log.Printf("[DB ERROR] Falha ao scanear passo: %v", err)
+			continue
+		}
+		
+		// O campo Content é json.RawMessage, aceita o []byte do DB diretamente
+		s.Content = contentJSON 
+
+		if nextStepID.Valid {
+			tempNextID := int(nextStepID.Int32)
+			s.NextStepID = &tempNextID
+		} else {
+			s.NextStepID = nil // Garante que será nil se for NULL no DB
+		}
+		
+		steps = append(steps, s)
+	}
+	f.Steps = steps
+
+	return c.JSON(f)
+}
+
+// DELETE /flows/:id - Exclui um fluxo e seus passos
+func deleteFlow(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(int)
+	flowID := c.Params("id")
+
+	// O CASCADE DELETE nas tabelas flows_steps e flows faz a mágica:
+	// Apenas deletamos o fluxo, e o banco se encarrega dos passos.
+	result, err := db.Exec("DELETE FROM flows WHERE id=$1 AND user_id=$2", flowID, userID)
+	
+	if err != nil {
+		log.Printf("[DB ERROR] Falha ao deletar fluxo: %v", err)
+		return c.Status(500).JSON(fiber.Map{"error": "Falha ao excluir fluxo"})
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "Fluxo não encontrado ou não pertence ao usuário"})
+	}
+
+	return c.JSON(fiber.Map{"message": "Fluxo excluído com sucesso"})
 }
 
 func callEvolution(method, endpoint string, body interface{}) ([]byte, int, error) {
@@ -174,7 +435,14 @@ func callEvolution(method, endpoint string, body interface{}) ([]byte, int, erro
 	var reqBody io.Reader
 	var jsonData []byte
 	if body != nil {
-		jsonData, _ = json.Marshal(body)
+		// CORREÇÃO DE ERRO: Se o body for json.RawMessage (vindo do FlowStep), ele já é um JSON válido.
+		// Precisamos verificar o tipo.
+		if raw, ok := body.(json.RawMessage); ok {
+			jsonData = raw
+		} else {
+			// Caso contrário, faz o marshal normal.
+			jsonData, _ = json.Marshal(body)
+		}
 		reqBody = bytes.NewBuffer(jsonData)
 	}
 
@@ -188,9 +456,6 @@ func callEvolution(method, endpoint string, body interface{}) ([]byte, int, erro
 		req.Header.Set("apikey", evolutionKey)
 	}
 
-	// Logs reduzidos para evitar poluição
-	// log.Printf("[EVOLUTION] %s %s", method, url)
-
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[EVOLUTION] Erro: %v", err)
@@ -199,7 +464,6 @@ func callEvolution(method, endpoint string, body interface{}) ([]byte, int, erro
 	defer resp.Body.Close()
 	respData, _ := io.ReadAll(resp.Body)
 
-	// Log apenas se der erro (status > 299)
 	if resp.StatusCode > 299 {
 		log.Printf("[EVOLUTION] Erro Status %d: %s", resp.StatusCode, truncateLog(string(respData), 200))
 	}
@@ -254,35 +518,28 @@ func login(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"token": t, "role": role})
 }
 
-// ============================================
-// GET /whatsapp - Retorna estado atual
-// ============================================
 func getWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var s WhatsAppSession
 
-	// Buscar sessão no banco - INCLUINDO NÚMERO
 	err := db.QueryRow(`
 		SELECT session_name, status,
-		       COALESCE(profile_pic, ''), COALESCE(profile_name, ''), COALESCE(profile_status, ''),
-		       COALESCE(number, ''),
-		       COALESCE(reject_call, false), COALESCE(msg_call, ''), COALESCE(groups_ignore, false),
-		       COALESCE(always_online, false), COALESCE(read_messages, false), COALESCE(read_status, false),
-		       COALESCE(qr_code, '')
+			   COALESCE(profile_pic, ''), COALESCE(profile_name, ''), COALESCE(profile_status, ''),
+			   COALESCE(number, ''),
+			   COALESCE(reject_call, false), COALESCE(msg_call, ''), COALESCE(groups_ignore, false),
+			   COALESCE(always_online, false), COALESCE(read_messages, false), COALESCE(read_status, false),
+			   COALESCE(qr_code, '')
 		FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1`, userID).
 		Scan(&s.SessionName, &s.Status, &s.ProfilePic, &s.ProfileName, &s.ProfileStatus,
 			&s.Number, &s.RejectCall, &s.MsgCall, &s.GroupsIgnore, &s.AlwaysOnline, &s.ReadMessages, &s.ReadStatus, &s.QrCode)
 
 	if err == sql.ErrNoRows || s.SessionName == "" {
-		// log.Printf("[NEXBOT] Usuário %v não tem instância", userID)
 		return c.JSON(fiber.Map{"status": "NO_INSTANCE"})
 	}
 
-	// Buscar status na Evolution API
 	data, code, _ := callEvolution("GET", fmt.Sprintf("/instance/fetchInstances?instanceName=%s", s.SessionName), nil)
 
 	if code == 200 {
-		// Parse da resposta - Evolution v2.3.6 retorna dados na raiz
 		var instances []struct {
 			ConnectionStatus string `json:"connectionStatus"`
 			Status           string `json:"status"`
@@ -296,17 +553,9 @@ func getWhatsApp(c *fiber.Ctx) error {
 
 		if json.Unmarshal(data, &instances) == nil && len(instances) > 0 {
 			inst := instances[0]
-
-			// Determinar status - Evolution v2.3.6 usa connectionStatus
 			statusRaw := strings.ToLower(inst.ConnectionStatus)
-			if statusRaw == "" {
-				statusRaw = strings.ToLower(inst.Status)
-			}
-			if statusRaw == "" {
-				statusRaw = strings.ToLower(inst.State)
-			}
-
-			// log.Printf("[NEXBOT] Status Evolution: '%s' | Number: '%s'", statusRaw, inst.Number)
+			if statusRaw == "" { statusRaw = strings.ToLower(inst.Status) }
+			if statusRaw == "" { statusRaw = strings.ToLower(inst.State) }
 
 			newStatus := "DISCONNECTED"
 			if statusRaw == "open" || statusRaw == "connected" {
@@ -315,38 +564,24 @@ func getWhatsApp(c *fiber.Ctx) error {
 				newStatus = "CONNECTING"
 			}
 
-			// Atualiza dados do perfil
 			pic := inst.ProfilePicUrl
 			name := inst.ProfileName
 			pStatus := inst.ProfileStatus
 			number := inst.Number
 
-			// Extrair número do ownerJid se não tiver
 			if number == "" && inst.OwnerJid != "" {
 				parts := strings.Split(inst.OwnerJid, "@")
-				if len(parts) > 0 {
-					number = parts[0]
-				}
+				if len(parts) > 0 { number = parts[0] }
 			}
 
-			// Fallbacks
-			if pic == "" {
-				pic = s.ProfilePic
-			}
+			if pic == "" { pic = s.ProfilePic }
 			if pic == "" && newStatus == "CONNECTED" {
 				pic = "https://ui-avatars.com/api/?name=" + s.SessionName + "&background=10b981&color=fff&size=200"
 			}
-			if name == "" {
-				name = s.ProfileName
-			}
-			if name == "" {
-				name = s.SessionName
-			}
-			if number == "" {
-				number = s.Number
-			}
+			if name == "" { name = s.ProfileName }
+			if name == "" { name = s.SessionName }
+			if number == "" { number = s.Number }
 
-			// Atualizar banco
 			db.Exec(`UPDATE sessions SET status=$1, profile_name=$2, profile_pic=$3, profile_status=$4, number=$5 WHERE user_id=$6`,
 				newStatus, name, pic, pStatus, number, userID)
 
@@ -356,7 +591,6 @@ func getWhatsApp(c *fiber.Ctx) error {
 			s.ProfileStatus = pStatus
 			s.Number = number
 
-			// Se conectado, buscar settings
 			if newStatus == "CONNECTED" {
 				settingsData, settingsCode, _ := callEvolution("GET", fmt.Sprintf("/settings/find/%s", s.SessionName), nil)
 				if settingsCode == 200 {
@@ -368,7 +602,6 @@ func getWhatsApp(c *fiber.Ctx) error {
 						ReadMessages bool   `json:"readMessages"`
 						ReadStatus   bool   `json:"readStatus"`
 					}
-
 					if json.Unmarshal(settingsData, &sets) == nil {
 						s.RejectCall = sets.RejectCall
 						s.MsgCall = sets.MsgCall
@@ -376,7 +609,7 @@ func getWhatsApp(c *fiber.Ctx) error {
 						s.AlwaysOnline = sets.AlwaysOnline
 						s.ReadMessages = sets.ReadMessages
 						s.ReadStatus = sets.ReadStatus
-
+						
 						db.Exec(`UPDATE sessions SET reject_call=$1, msg_call=$2, groups_ignore=$3, always_online=$4, read_messages=$5, read_status=$6 WHERE user_id=$7`,
 							s.RejectCall, s.MsgCall, s.GroupsIgnore, s.AlwaysOnline, s.ReadMessages, s.ReadStatus, userID)
 					}
@@ -391,9 +624,6 @@ func getWhatsApp(c *fiber.Ctx) error {
 	return c.JSON(s)
 }
 
-// ============================================
-// POST /whatsapp/connect - Criar nova instância
-// ============================================
 func connectWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var req ConnectRequest
@@ -402,12 +632,13 @@ func connectWhatsApp(c *fiber.Ctx) error {
 	}
 
 	instanceName := strings.ReplaceAll(req.InstanceName, " ", "")
-	if instanceName == "" {
-		instanceName = "NexBotDefault"
-	}
+	if instanceName == "" { instanceName = "NexBotDefault" }
+
+	phoneToUse := req.PhoneNumber
+	if phoneToUse == "" { phoneToUse = req.Number }
 
 	reg, _ := regexp.Compile("[^0-9]+")
-	cleanNumber := reg.ReplaceAllString(req.PhoneNumber, "")
+	cleanNumber := reg.ReplaceAllString(phoneToUse, "")
 	if cleanNumber != "" && !strings.HasPrefix(cleanNumber, "55") {
 		cleanNumber = "55" + cleanNumber
 	}
@@ -415,13 +646,15 @@ func connectWhatsApp(c *fiber.Ctx) error {
 	if len(instanceName) < 3 {
 		return c.Status(400).JSON(fiber.Map{"error": "Nome muito curto (mínimo 3 caracteres)."})
 	}
-	if cleanNumber == "" || len(cleanNumber) < 12 {
-		return c.Status(400).JSON(fiber.Map{"error": "Número inválido. Use formato: 5511999999999"})
+	
+	if req.Method == "pairing" || req.Method == "create" {
+		if cleanNumber == "" || len(cleanNumber) < 12 {
+			return c.Status(400).JSON(fiber.Map{"error": "Número inválido."})
+		}
 	}
 
-	log.Printf("[NEXBOT] Criando instância: %s para número %s", instanceName, cleanNumber)
+	log.Printf("[NEXBOT] Criando instância: %s | Número: %s", instanceName, cleanNumber)
 
-	// Verificar se já existe na Evolution e deletar
 	fetchData, fetchStatus, _ := callEvolution("GET", fmt.Sprintf("/instance/fetchInstances?instanceName=%s", instanceName), nil)
 	if fetchStatus == 200 {
 		var instances []interface{}
@@ -434,18 +667,17 @@ func connectWhatsApp(c *fiber.Ctx) error {
 		}
 	}
 
-	// Criar instância
 	createPayload := map[string]interface{}{
 		"instanceName": instanceName,
 		"token":        "nexbot-" + instanceName,
-		"qrcode":       true,
+		"qrcode":       req.Method == "qrcode",
 		"number":       cleanNumber,
 		"integration":  "WHATSAPP-BAILEYS",
 	}
 
 	createResp, status, err := callEvolution("POST", "/instance/create", createPayload)
 	if err != nil {
-		return c.Status(502).JSON(fiber.Map{"error": "Evolution API indisponível"})
+		return c.Status(502).JSON(fiber.Map{"error": "NexBot indisponível"})
 	}
 
 	if status != 201 && status != 200 {
@@ -453,69 +685,55 @@ func connectWhatsApp(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Erro ao criar instância (status %d)", status)})
 	}
 
-	// Salvar no banco COM O NÚMERO
 	var sessionId int
 	db.QueryRow("SELECT id FROM sessions WHERE user_id=$1", userID).Scan(&sessionId)
 	if sessionId == 0 {
-		db.Exec(`INSERT INTO sessions (user_id, session_name, status, number) VALUES ($1, $2, 'CONNECTING', $3)`, userID, instanceName, cleanNumber)
+		db.Exec(`INSERT INTO sessions (user_id, session_name, status, number) VALUES ($1, $2, 'DISCONNECTED', $3)`, userID, instanceName, cleanNumber)
 	} else {
-		db.Exec(`UPDATE sessions SET session_name=$1, status='CONNECTING', number=$2 WHERE id=$3`, instanceName, cleanNumber, sessionId)
+		db.Exec(`UPDATE sessions SET session_name=$1, status='DISCONNECTED', number=$2 WHERE id=$3`, instanceName, cleanNumber, sessionId)
 	}
 
-	time.Sleep(3 * time.Second)
-
+	time.Sleep(1 * time.Second)
 	result := fiber.Map{"status": "CREATED", "instance": instanceName}
 
-	// QR CODE
+	if req.Method == "create" {
+		return c.JSON(result)
+	}
+
 	if req.Method == "qrcode" || req.Method == "" {
 		qrData, _, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s", instanceName), nil)
 		finalQR := extractQRCode(qrData)
-
 		if finalQR == "" {
 			time.Sleep(2 * time.Second)
 			qrData, _, _ = callEvolution("GET", fmt.Sprintf("/instance/connect/%s", instanceName), nil)
 			finalQR = extractQRCode(qrData)
 		}
-
 		if finalQR == "" {
 			return c.Status(500).JSON(fiber.Map{"error": "QR Code não disponível."})
 		}
-
 		if !strings.HasPrefix(finalQR, "data:image") {
 			finalQR = "data:image/png;base64," + finalQR
 		}
-
 		db.Exec("UPDATE sessions SET status='QRCODE', qr_code=$1 WHERE user_id=$2", finalQR, userID)
-
 		result["status"] = "QRCODE"
 		result["qr_code"] = finalQR
 		return c.JSON(result)
 	}
 
-	// PAIRING CODE
 	if req.Method == "pairing" {
-		callEvolution("GET", fmt.Sprintf("/instance/connect/%s", instanceName), nil)
-		time.Sleep(2 * time.Second)
-
 		pairData, pairStatus, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s?number=%s", instanceName, cleanNumber), nil)
-
 		if pairStatus != 200 && pairStatus != 201 {
 			pairData, _, _ = callEvolution("POST", fmt.Sprintf("/instance/connect/%s", instanceName), map[string]string{"number": cleanNumber})
 		}
-
 		code := extractPairingCode(pairData)
-
 		if code == "" {
 			return c.Status(500).JSON(fiber.Map{"error": "Código de pareamento não retornado."})
 		}
-
 		code = strings.ToUpper(strings.TrimSpace(code))
 		if len(code) == 8 && !strings.Contains(code, "-") {
 			code = code[:4] + "-" + code[4:]
 		}
-
 		db.Exec("UPDATE sessions SET status='PAIRING' WHERE user_id=$1", userID)
-
 		result["status"] = "PAIRING"
 		result["pairing_code"] = code
 		return c.JSON(result)
@@ -524,56 +742,88 @@ func connectWhatsApp(c *fiber.Ctx) error {
 	return c.Status(400).JSON(fiber.Map{"error": "Método inválido"})
 }
 
-// ============================================
-// POST /whatsapp/reconnect - Reconectar instância existente
-// ============================================
 func reconnectWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 
-	var sessionName, number string
-	db.QueryRow("SELECT session_name, COALESCE(number, '') FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName, &number)
+	var req ConnectRequest
+	c.BodyParser(&req)
+
+	var sessionName, dbNumber string
+	db.QueryRow("SELECT session_name, COALESCE(number, '') FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName, &dbNumber)
 
 	if sessionName == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Nenhuma instância encontrada"})
 	}
 
-	log.Printf("[NEXBOT] Reconectando instância %s (número: %s)", sessionName, number)
+	phoneToUse := req.PhoneNumber
+	if phoneToUse == "" { phoneToUse = req.Number }
+	if phoneToUse == "" { phoneToUse = dbNumber }
 
-	// Verificar se instância existe na Evolution
+	reg, _ := regexp.Compile("[^0-9]+")
+	cleanNumber := reg.ReplaceAllString(phoneToUse, "")
+	if cleanNumber != "" && !strings.HasPrefix(cleanNumber, "55") {
+		cleanNumber = "55" + cleanNumber
+	}
+
+	log.Printf("[NEXBOT] Reconectando %s | Método: %s | Número: %s", sessionName, req.Method, cleanNumber)
+
+	if cleanNumber != "" && cleanNumber != dbNumber {
+		db.Exec("UPDATE sessions SET number=$1 WHERE user_id=$2", cleanNumber, userID)
+	}
+
 	fetchData, fetchCode, _ := callEvolution("GET", fmt.Sprintf("/instance/fetchInstances?instanceName=%s", sessionName), nil)
 
 	if fetchCode != 200 {
-		// Instância não existe, precisa recriar
 		log.Printf("[NEXBOT] Instância não existe na Evolution, recriando...")
-
 		createPayload := map[string]interface{}{
 			"instanceName": sessionName,
 			"token":        "nexbot-" + sessionName,
-			"qrcode":       true,
-			"number":       number,
+			"qrcode":       req.Method != "pairing",
+			"number":       cleanNumber,
 			"integration":  "WHATSAPP-BAILEYS",
 		}
-
 		_, createStatus, _ := callEvolution("POST", "/instance/create", createPayload)
 		if createStatus != 200 && createStatus != 201 {
 			return c.Status(500).JSON(fiber.Map{"error": "Falha ao recriar instância"})
 		}
 		time.Sleep(2 * time.Second)
 	} else {
-		// Verificar status atual
-		var instances []struct {
-			ConnectionStatus string `json:"connectionStatus"`
-		}
+		var instances []struct { ConnectionStatus string `json:"connectionStatus"` }
 		if json.Unmarshal(fetchData, &instances) == nil && len(instances) > 0 {
 			if strings.ToLower(instances[0].ConnectionStatus) == "open" {
-				// Já está conectado!
 				db.Exec("UPDATE sessions SET status='CONNECTED' WHERE user_id=$1", userID)
 				return c.JSON(fiber.Map{"status": "CONNECTED", "message": "Já está conectado!"})
 			}
 		}
 	}
 
-	// Gerar QR Code
+	if req.Method == "pairing" {
+		if cleanNumber == "" || len(cleanNumber) < 12 {
+			return c.Status(400).JSON(fiber.Map{"error": "Número inválido para pareamento."})
+		}
+
+		pairData, pairStatus, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s?number=%s", sessionName, cleanNumber), nil)
+		if pairStatus != 200 && pairStatus != 201 {
+			pairData, _, _ = callEvolution("POST", fmt.Sprintf("/instance/connect/%s", sessionName), map[string]string{"number": cleanNumber})
+		}
+
+		code := extractPairingCode(pairData)
+		if code == "" {
+			return c.Status(500).JSON(fiber.Map{"error": "Falha ao gerar Código de Pareamento."})
+		}
+
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if len(code) == 8 && !strings.Contains(code, "-") {
+			code = code[:4] + "-" + code[4:]
+		}
+
+		db.Exec("UPDATE sessions SET status='PAIRING' WHERE user_id=$1", userID)
+		return c.JSON(fiber.Map{
+			"status":       "PAIRING",
+			"pairing_code": code,
+		})
+	}
+
 	qrData, _, _ := callEvolution("GET", fmt.Sprintf("/instance/connect/%s", sessionName), nil)
 	finalQR := extractQRCode(qrData)
 
@@ -600,7 +850,7 @@ func reconnectWhatsApp(c *fiber.Ctx) error {
 }
 
 // ============================================
-// PUT /whatsapp/settings - Atualizar configurações
+// FUNÇÃO DE CONFIGURAÇÃO CORRIGIDA
 // ============================================
 func updateWhatsAppSettings(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
@@ -609,10 +859,11 @@ func updateWhatsAppSettings(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Dados inválidos"})
 	}
 
+	// 1. Busca o nome da sessão (usando a mesma lógica de getWhatsApp)
 	var sessionName string
-	db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName)
+	err := db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName)
 
-	if sessionName == "" {
+	if err != nil || sessionName == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "Nenhuma sessão encontrada"})
 	}
 
@@ -632,8 +883,15 @@ func updateWhatsAppSettings(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Falha ao atualizar configurações na Evolution"})
 	}
 
-	db.Exec(`UPDATE sessions SET reject_call=$1, msg_call=$2, groups_ignore=$3, always_online=$4, read_messages=$5, read_status=$6 WHERE user_id=$7`,
+	// 2. CORREÇÃO: Atualiza via user_id para garantir consistência
+	// Se houver múltiplas sessões antigas, atualiza todas do usuário para evitar conflitos visuais no painel
+	_, err = db.Exec(`UPDATE sessions SET reject_call=$1, msg_call=$2, groups_ignore=$3, always_online=$4, read_messages=$5, read_status=$6 WHERE user_id=$7`,
 		req.RejectCall, req.MsgCall, req.GroupsIgnore, req.AlwaysOnline, req.ReadMessages, req.ReadStatus, userID)
+
+	if err != nil {
+		log.Printf("[DB ERRO] Falha ao salvar settings: %v", err)
+		return c.Status(500).JSON(fiber.Map{"error": "Erro ao salvar no banco de dados"})
+	}
 
 	return c.JSON(fiber.Map{"message": "Configurações salvas com sucesso!"})
 }
@@ -641,14 +899,27 @@ func updateWhatsAppSettings(c *fiber.Ctx) error {
 func restartWhatsApp(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var sessionName string
+
 	db.QueryRow("SELECT session_name FROM sessions WHERE user_id=$1 ORDER BY id DESC LIMIT 1", userID).Scan(&sessionName)
-	if sessionName != "" {
-		_, code, _ := callEvolution("PUT", fmt.Sprintf("/instance/restart/%s", sessionName), nil)
-		if code == 200 || code == 201 {
-			return c.JSON(fiber.Map{"message": "Instância reiniciada!"})
-		}
+
+	if sessionName == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Nenhuma instância encontrada"})
 	}
-	return c.Status(500).JSON(fiber.Map{"error": "Falha ao reiniciar"})
+
+	payload := map[string]interface{}{}
+	resp, code, err := callEvolution("POST", fmt.Sprintf("/instance/restart/%s", sessionName), payload)
+
+	if err != nil {
+		log.Printf("[RESTART] Erro ao chamar Evolution: %v", err)
+		return c.Status(500).JSON(fiber.Map{"error": "Falha ao reiniciar a instância (erro de comunicação)"})
+	}
+
+	if code != 200 && code != 201 {
+		log.Printf("[RESTART] Evolution retornou erro %d: %s", code, string(resp))
+		return c.Status(500).JSON(fiber.Map{"error": "Evolution não conseguiu reiniciar a instância"})
+	}
+
+	return c.JSON(fiber.Map{"message": "Instância reiniciada com sucesso!"})
 }
 
 func deleteWhatsApp(c *fiber.Ctx) error {
@@ -661,7 +932,9 @@ func deleteWhatsApp(c *fiber.Ctx) error {
 		callEvolution("DELETE", fmt.Sprintf("/instance/delete/%s", sessionName), nil)
 	}
 	db.Exec("DELETE FROM sessions WHERE user_id=$1", userID)
-	return c.JSON(fiber.Map{"message": "Instância deletada!"})
+	db.Exec("INSERT INTO sessions (user_id, session_name, status, number) VALUES ($1, '', 'DISCONNECTED', '')", userID)
+
+	return c.JSON(fiber.Map{"message": "Instância deletada e desconectada!"})
 }
 
 func logoutWhatsApp(c *fiber.Ctx) error {
@@ -706,9 +979,6 @@ func extractPairingCode(data []byte) string {
 	return ""
 }
 
-// ============================================
-// ECLIPSE - Salvar configurações com validação
-// ============================================
 func saveEclipseSettings(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var req EclipseSettingsRequest
@@ -721,7 +991,6 @@ func saveEclipseSettings(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "URL e API Key são obrigatórios!"})
 	}
 
-	// Testar conexão real
 	testPayload := map[string]string{
 		"method": "listarUsers",
 		"tipo":   "all",
@@ -785,9 +1054,6 @@ func verifyEmailCode(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "Verificado!"})
 }
 
-// ============================================
-// ECLIPSE - Criar Teste/Usuário (LIMPO PARA PRODUÇÃO)
-// ============================================
 func createEclipseTest(c *fiber.Ctx) error {
 	userID := c.Locals("user_id")
 	var req CreateTestRequest
@@ -813,7 +1079,6 @@ func createEclipseTest(c *fiber.Ctx) error {
 	if req.ModoConta == "" { req.ModoConta = "ssh" }
 	if req.Categoria == 0 { req.Categoria = 1 }
 
-	// 1. FORÇAR XRAY TRUE
 	sendXray := req.Xray
 	if strings.Contains(strings.ToLower(req.ModoConta), "xray") {
 		sendXray = true
@@ -830,7 +1095,6 @@ func createEclipseTest(c *fiber.Ctx) error {
 		"categoria":  req.Categoria,
 		"sendzap":    req.SendZap,
 		"xray":       sendXray,
-		// Envia "numero" SEMPRE, mesmo que vazio, para evitar Warning do PHP da API
 		"numero":     req.Numero, 
 	}
 
@@ -853,53 +1117,43 @@ func createEclipseTest(c *fiber.Ctx) error {
 	}
 	defer resp.Body.Close()
 
-	// 2. LER E LIMPAR RESPOSTA (SANITIZAÇÃO)
 	respBody, _ := io.ReadAll(resp.Body)
 	
 	if resp.StatusCode != 200 {
-		// Log somente erro real, não resposta de sucesso
 		log.Printf("[ECLIPSE] Erro API (%d): %s", resp.StatusCode, string(respBody))
 		return c.Status(400).JSON(fiber.Map{"error": "API recusou a operação"})
 	}
 
-	// Limpar avisos PHP do início se houver (encontrar o primeiro '{')
 	cleanBody := respBody
 	jsonStart := bytes.IndexByte(respBody, '{')
 	if jsonStart > 0 {
 		cleanBody = respBody[jsonStart:]
 	}
 
-	// 3. PARSEAR O JSON LIMPO
 	var eclipseResp map[string]interface{}
 	d := json.NewDecoder(bytes.NewReader(cleanBody))
 	d.UseNumber()
 	err = d.Decode(&eclipseResp)
 	
-	// Salvar no banco
 	db.Exec(`INSERT INTO eclipse_tests (user_id, login_generated, password_generated, duration_minutes, status, expires_at) 
 		VALUES ($1, $2, $3, $4, 'active', NOW() + INTERVAL '1 minute' * $4)`,
 		userID, req.Login, req.Senha, req.Validade)
 
-	// 4. EXTRAÇÃO RECURSIVA (Busca em profundidade)
 	finalXray := ""
 	if eclipseResp != nil {
 		finalXray = findXrayRecursive(eclipseResp)
 	} else {
-		// Fallback para string original
 		finalXray = findXrayInString(string(respBody))
 	}
 
-	// 5. Retorno LIMPO para o Frontend
 	return c.JSON(fiber.Map{
 		"success":   true,
 		"login":     req.Login,
 		"senha":     req.Senha,
 		"xray":      finalXray,
-		// debug_raw REMOVIDO PARA PRODUÇÃO
 	})
 }
 
-// Busca recursiva em mapas e listas
 func findXrayRecursive(data interface{}) string {
 	if data == nil { return "" }
 
@@ -929,9 +1183,7 @@ func findXrayRecursive(data interface{}) string {
 	return ""
 }
 
-// Fallback agressivo usando Regex se o JSON estiver muito quebrado
 func findXrayInString(raw string) string {
-	// Tenta achar padrões como "xray":"vless://..."
 	re := regexp.MustCompile(`"xray"\s*:\s*"([^"]+)"`)
 	matches := re.FindStringSubmatch(raw)
 	if len(matches) > 1 {
